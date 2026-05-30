@@ -1,0 +1,4 @@
+interface:
+  display_name: "Polymarket Address Activity"
+  short_description: "Export address trades and settlement results"
+  default_prompt: "Use $polymarket-address-activity to export a Polymarket address activity time range with resolved market outcomes."
