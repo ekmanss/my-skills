@@ -10,6 +10,7 @@ skills/
   polymarket-updown-strategy-replicator/
   data/
     polymarket-address-activity/
+    binance-spot-kline-history/
 ```
 
 - `skills/data/`: data export, API collection, market research, and analytics workflows.
@@ -21,6 +22,7 @@ skills/
 | `strategy-replication-auditor` | `quant review` | Audit pixel-level strategy replication docs against independent-team no-context reproducibility and score them out of 100. |
 | `polymarket-updown-strategy-replicator` | `quant research` | Analyze a Polymarket wallet and generate a pixel-level crypto Up/Down strategy replication report. |
 | `polymarket-address-activity` | `data` | Export complete Polymarket address activity for a time range and enrich trades with Gamma market settlement results. |
+| `binance-spot-kline-history` | `data` | Fetch Binance spot kline history using monthly archives, daily archives, then REST API gap fill. |
 
 ## Install
 
@@ -31,6 +33,7 @@ mkdir -p ~/.codex/skills
 cp -R skills/strategy-replication-auditor ~/.codex/skills/
 cp -R skills/polymarket-updown-strategy-replicator ~/.codex/skills/
 cp -R skills/data/polymarket-address-activity ~/.codex/skills/
+cp -R skills/data/binance-spot-kline-history ~/.codex/skills/
 ```
 
-After copying, invoke skills by name, such as `$strategy-replication-auditor`, `$polymarket-updown-strategy-replicator`, or `$polymarket-address-activity`.
+After copying, invoke skills by name, such as `$strategy-replication-auditor`, `$polymarket-updown-strategy-replicator`, `$polymarket-address-activity`, or `$binance-spot-kline-history`.

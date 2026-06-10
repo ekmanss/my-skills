@@ -1,0 +1,4 @@
+interface:
+  display_name: "Binance Spot Kline History"
+  short_description: "Fetch Binance spot kline history via archives"
+  default_prompt: "Use $binance-spot-kline-history to fetch BTCUSDT 1s spot klines for a specific UTC time range."
