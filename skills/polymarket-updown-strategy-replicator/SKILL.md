@@ -65,7 +65,7 @@ The report must include these sections:
 - Data sources, schemas, timezone, filtering rules, and data-health counts.
 - Market mechanics, payoff, settlement, fee and order-type assumptions.
 - Observed performance by BTC interval, side, price band, and phase.
-- 5m/15m live/shadow/disabled recommendation derived from ROI, q* margin, and data coverage.
+- Interval live/shadow/disabled recommendation derived from ROI, q* margin, sample size, and data coverage.
 - Inferred order lifecycle: start, stop, frequency, multi-fill order rate.
 - Batch and ladder structure: one-side versus both-side batches, rank sizes, price offsets.
 - Inventory and q*: formulas, dynamic q* anchors, final net correctness, qstar margin, final-net lock timing, net caps.

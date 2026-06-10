@@ -185,6 +185,12 @@ def parse_args() -> argparse.Namespace:
         help="Retries per raw export chunk before failing the run. Default 3.",
     )
     parser.add_argument(
+        "--export-timeout-sec",
+        type=int,
+        default=600,
+        help="Wall-clock timeout for each activity exporter subprocess attempt. Default 600 seconds.",
+    )
+    parser.add_argument(
         "--export-limit",
         type=int,
         default=500,
@@ -202,6 +208,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binance-kline-interval", default="1s", help="Binance kline interval. Default 1s.")
     parser.add_argument("--binance-kline-cache-dir", default="", help="Optional cache directory passed to the Binance kline fetcher.")
     parser.add_argument("--binance-max-api-pages", type=int, default=0, help="Optional --max-api-pages passed to the Binance kline fetcher.")
+    parser.add_argument(
+        "--binance-timeout-sec",
+        type=int,
+        default=1800,
+        help="Wall-clock timeout for the Binance kline fetch subprocess. Default 1800 seconds.",
+    )
     parser.add_argument("--single-export", action="store_true", help="Disable external chunking and call exporter once.")
     parser.add_argument("--order-gap-sec", type=int, default=DEFAULT_ORDER_GAP_SEC)
     parser.add_argument("--batch-gap-sec", type=int, default=DEFAULT_BATCH_GAP_SEC)
@@ -304,6 +316,18 @@ def fmt_pct(value: Any, digits: int = 2) -> str:
     if not math.isfinite(x):
         return "n/a"
     return f"{x * 100:.{digits}f}%"
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], max_rows: int = 30) -> str:
@@ -514,10 +538,24 @@ def run_exporter(
     run: subprocess.CompletedProcess[str] | None = None
     attempts = max(1, int(args.export_retries))
     for attempt in range(1, attempts + 1):
-        run = subprocess.run(cmd, text=True, capture_output=True, check=False)
         suffix = "" if attempt == attempts else f".attempt{attempt}"
-        (log_dir / f"{label}{suffix}.stdout.txt").write_text(run.stdout, encoding="utf-8")
-        (log_dir / f"{label}{suffix}.stderr.txt").write_text(run.stderr, encoding="utf-8")
+        try:
+            run = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=max(1, int(args.export_timeout_sec)),
+            )
+            stdout = run.stdout
+            stderr = run.stderr
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+            stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
+            stderr += f"\nTimed out after {args.export_timeout_sec}s\n"
+            run = subprocess.CompletedProcess(cmd, returncode=124, stdout=stdout, stderr=stderr)
+        (log_dir / f"{label}{suffix}.stdout.txt").write_text(stdout, encoding="utf-8")
+        (log_dir / f"{label}{suffix}.stderr.txt").write_text(stderr, encoding="utf-8")
         if run.returncode == 0:
             break
         if attempt < attempts:
@@ -820,9 +858,23 @@ def prepare_binance_kline_csv(activity_csv: Path, args: argparse.Namespace, out_
     if args.binance_max_api_pages:
         cmd.extend(["--max-api-pages", str(args.binance_max_api_pages)])
     print(f"Fetching Binance BTCUSDT {args.binance_kline_interval} klines: {utc_arg(start)} -> {utc_arg(end)}", flush=True)
-    run = subprocess.run(cmd, text=True, capture_output=True, check=False)
     log_dir = out_dir / "_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        run = subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=max(1, int(args.binance_timeout_sec)),
+        )
+        stdout = run.stdout
+        stderr = run.stderr
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
+        stderr += f"\nTimed out after {args.binance_timeout_sec}s\n"
+        run = subprocess.CompletedProcess(cmd, returncode=124, stdout=stdout, stderr=stderr)
     (log_dir / "binance_kline_fetch.stdout.txt").write_text(run.stdout, encoding="utf-8")
     (log_dir / "binance_kline_fetch.stderr.txt").write_text(run.stderr, encoding="utf-8")
     if run.returncode != 0:
@@ -2270,7 +2322,7 @@ def generate_report(
             ],
         )
     )
-    lines.append("\n### 5m/15m 实盘范围判定\n")
+    lines.append("\n### Interval 实盘范围判定\n")
     lines.append(
         markdown_table(
             interval_mode_rows,
@@ -2590,7 +2642,7 @@ def generate_report(
     )
 
     lines.append("\n## 样本派生的复刻配置\n")
-    lines.append("```json\n" + json.dumps(config, ensure_ascii=False, indent=2) + "\n```\n")
+    lines.append("```json\n" + json.dumps(json_safe(config), ensure_ascii=False, indent=2) + "\n```\n")
     lines.append(
         "这些值不是永恒参数，而是该地址在本窗口内的行为锚点。上线前必须在新窗口重算，并使用 shadow gate。"
     )
@@ -3085,8 +3137,9 @@ def main() -> int:
         size_diagnostic_rows=size_diagnostic_rows,
         interval_mode_rows=interval_mode_rows,
     )
-    (out_dir / "analysis_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    safe_summary = json_safe(summary)
+    (out_dir / "analysis_summary.json").write_text(json.dumps(safe_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(safe_summary, ensure_ascii=False, indent=2))
     print(f"\nREPORT={report_path}")
     return 0
 
