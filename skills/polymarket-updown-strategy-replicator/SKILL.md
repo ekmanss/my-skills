@@ -11,6 +11,8 @@ Generate a source-backed, audit-ready strategy replication report from one Polym
 
 This skill builds on `$polymarket-address-activity` for complete address exports and settlement labels, then uses `$binance-spot-kline-history` for BTCUSDT kline context. It applies a PBot-3 style forensic workflow: inferred limit orders, quote batches, ladder ranks, lifecycle timing, two-sided inventory, q* breakeven math, side streaks, budget and sizing distributions, and a concrete implementation handoff.
 
+The quality baseline is `trader-activitys/PBot-3/analysis_20260610/reports/pbot3_accumulation_strategy_pixel_replication_plan_20260610.md`. A generated report should be at least as clear and more self-contained than that template for a fresh address.
+
 ## Quick Start
 
 When the user provides only an address, run:
@@ -51,8 +53,9 @@ If the CSV is a raw activity export without settlement fields, the analyzer will
 1. **Export or load trades and settlement.** Prefer the bundled analyzer with `--user`; it delegates address activity to `$polymarket-address-activity`. Use `--input` only when the CSV is already settlement-enriched or when the analyzer is allowed to enrich it.
 2. **Fetch or load BTCUSDT kline.** Use `$binance-spot-kline-history` directly or pass `--fetch-binance-klines` / `--binance-kline-csv`. Use `1s` for settlement cross-checks and alpha timing.
 3. **Read the generated report.** Check the report path printed by the script. Do not answer from the JSON summary alone.
-4. **Audit the report.** Use `$strategy-replication-auditor` on the generated Markdown report. The target quality gate for this project is `>=80 / 100`.
-5. **Iterate if below 80.** Add missing exact defaults, worked examples, data-health caveats, or validation gates. Re-run quick validation after edits.
+4. **Compare against the PBot-3 template.** Read `references/pbot3_accumulation_report_contract.md` when judging report completeness. The report must include dynamic q* anchors, final-net lock timing, with/against-current-advantage tables, Kelly diagnostics, lifecycle/batch/ladder evidence, interval live/shadow recommendations, and an implementation handoff.
+5. **Audit the report.** Use `$strategy-replication-auditor` on the generated Markdown report. The target quality gate for this project is `>=85 / 100`.
+6. **Iterate if below 85.** Add missing exact defaults, worked examples, data-health caveats, or validation gates. Re-run quick validation after edits.
 
 ## Output Contract
 
@@ -62,10 +65,12 @@ The report must include these sections:
 - Data sources, schemas, timezone, filtering rules, and data-health counts.
 - Market mechanics, payoff, settlement, fee and order-type assumptions.
 - Observed performance by BTC interval, side, price band, and phase.
+- 5m/15m live/shadow/disabled recommendation derived from ROI, q* margin, and data coverage.
 - Inferred order lifecycle: start, stop, frequency, multi-fill order rate.
 - Batch and ladder structure: one-side versus both-side batches, rank sizes, price offsets.
-- Inventory and q*: formulas, final net correctness, qstar margin, net caps.
-- Direction and alpha inference: what can be inferred from fills, what requires BTCUSDT price path data, and the default model when kline/orderbook is available.
+- Inventory and q*: formulas, dynamic q* anchors, final net correctness, qstar margin, final-net lock timing, net caps.
+- Direction and alpha inference: with/against-current-advantage tables from BTCUSDT kline, streaks, what can be inferred from fills, what requires BTCUSDT orderbook, and the default model when kline/orderbook is available.
+- Size/Kelly diagnostic: price buckets, discrete lot evidence, correlation caveat, and verdict.
 - Deterministic replication config with concrete numbers derived from the wallet sample.
 - Execution rules, sizing rules, risk controls, backtest/shadow/live gates.
 - One worked market example from first order to final inventory.
@@ -84,7 +89,8 @@ The report must include these sections:
 Read these only when needed:
 
 - `references/pbot3_reverse_engineering_patterns.md`: PBot-3 derived analysis patterns and common traps.
-- `references/auditor_readiness_contract.md`: how to shape the report so `$strategy-replication-auditor` can score it above 80.
+- `references/pbot3_accumulation_report_contract.md`: minimum structure to beat the 2026-06-10 PBot-3 pixel replication template.
+- `references/auditor_readiness_contract.md`: how to shape the report so `$strategy-replication-auditor` can score it above 85.
 
 ## Validation
 

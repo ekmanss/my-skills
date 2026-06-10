@@ -1,6 +1,6 @@
 # Auditor Readiness Contract
 
-The generated report should target `>=80 / 100` under `$strategy-replication-auditor`.
+The generated report should target `>=85 / 100` under `$strategy-replication-auditor`.
 
 ## Minimum Content For Each Rubric Area
 
@@ -8,6 +8,7 @@ Reproducibility boundary:
 
 - Exact address, date window, generated timestamp, input CSV path, strategy version.
 - Included BTC intervals.
+- BTCUSDT kline source and current-advantage coverage.
 - Explicit non-goals and unknowns.
 
 Market mechanics:
@@ -22,6 +23,7 @@ Alpha model:
 
 - Distinguish observed ex-post edge from live alpha.
 - Provide default live alpha model when BTCUSDT kline/orderbook exists: features, labels, train window, calibration, fallback.
+- Include with/against-current-advantage and streak evidence when kline is available.
 
 Decision rules:
 
@@ -34,6 +36,7 @@ Execution:
 Sizing/inventory:
 
 - Lot formula, rank multipliers, q* formula, net caps, budget caps, bankroll scaling, weak-side rules.
+- Dynamic q* anchors and final-net lock timing.
 
 Risk:
 

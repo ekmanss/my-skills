@@ -81,6 +81,10 @@ class Trade:
     payout: float | None
     pnl: float | None
     tx_hash: str
+    btc_open: float | None
+    btc_trade_close: float | None
+    current_advantage: str
+    advantage_relation: str
     raw: dict[str, Any]
 
     @property
@@ -126,6 +130,8 @@ class InferredOrder:
     winning_outcome: str
     market_start: int | None
     market_end: int | None
+    current_advantage: str
+    advantage_relation: str
 
     @property
     def duration_sec(self) -> int:
@@ -311,7 +317,13 @@ def markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], m
         cells: list[str] = []
         for key, _ in columns:
             value = row.get(key, "")
-            if key.endswith("_rate") or key in {"roi", "cost_share", "order_share", "qstar_margin"}:
+            if (
+                key.endswith("_rate")
+                or key.endswith("_share")
+                or key.endswith("_frac")
+                or key.endswith("_fraction")
+                or key in {"roi", "cost_share", "order_share", "qstar_margin", "top_lot_order_share"}
+            ):
                 cells.append(fmt_pct(value))
             elif key.endswith("_cost") or key in {"cost", "pnl", "payout", "median_cost", "p95_cost", "p99_cost"}:
                 cells.append(fmt_num(value))
@@ -843,6 +855,73 @@ def load_binance_1s_candles(kline_csv: Path, timestamps: list[int]) -> dict[int,
     return candles
 
 
+def classify_current_advantage(open_price: float, trade_price: float) -> str:
+    if not math.isfinite(open_price) or not math.isfinite(trade_price):
+        return "no_kline"
+    if trade_price > open_price:
+        return "Up"
+    if trade_price < open_price:
+        return "Down"
+    return "Tie"
+
+
+def advantage_relation_for_outcome(outcome: str, current_advantage: str) -> str:
+    if current_advantage in {"", "no_kline"}:
+        return "no_kline"
+    if current_advantage == "Tie":
+        return "tie"
+    canonical = canonical_outcome(outcome)
+    if canonical == current_advantage:
+        return "with_current_advantage"
+    if canonical in {"Up", "Down"}:
+        return "against_current_advantage"
+    return "unknown_outcome"
+
+
+def binance_row_context(rows: list[dict[str, Any]], kline_csv: Path | None) -> dict[int, dict[str, Any]]:
+    if kline_csv is None:
+        return {}
+    timestamps: list[int] = []
+    row_windows: dict[int, tuple[int, int]] = {}
+    row_trade_ts: dict[int, int] = {}
+    for idx, row in enumerate(rows):
+        slug = row.get("eventSlug") or row.get("slug") or ""
+        title = row.get("title") or row.get("question") or row.get("name") or ""
+        if not is_btc_updown(slug, title):
+            continue
+        window = parse_btc_updown_window(row)
+        if window is not None:
+            row_windows[idx] = window
+            timestamps.extend([window[0], window[1] - 1])
+        trade_ts = clean_int(row.get("timestamp")) or parse_datetime_to_ts(row.get("datetimeUtc"))
+        if trade_ts is not None:
+            row_trade_ts[idx] = trade_ts
+            timestamps.append(trade_ts)
+    candles = load_binance_1s_candles(kline_csv, timestamps)
+    context: dict[int, dict[str, Any]] = {}
+    for idx, trade_ts in row_trade_ts.items():
+        window = row_windows.get(idx)
+        if window is None:
+            continue
+        start, end = window
+        open_candle = candles.get(start, {})
+        close_candle = candles.get(end - 1, {})
+        trade_candle = candles.get(trade_ts, {})
+        btc_open = open_candle.get("open", math.nan)
+        btc_close = close_candle.get("close", math.nan)
+        btc_trade_close = trade_candle.get("close", math.nan)
+        advantage = classify_current_advantage(btc_open, btc_trade_close)
+        outcome = rows[idx].get("outcome") or ""
+        context[idx] = {
+            "btcOpen": "" if not math.isfinite(btc_open) else f"{btc_open:.12f}",
+            "btcClose": "" if not math.isfinite(btc_close) else f"{btc_close:.12f}",
+            "btcTradeClose": "" if not math.isfinite(btc_trade_close) else f"{btc_trade_close:.12f}",
+            "currentAdvantage": advantage,
+            "advantageRelation": advantage_relation_for_outcome(outcome, advantage),
+        }
+    return context
+
+
 def binance_settle_btc_markets(rows: list[dict[str, Any]], kline_csv: Path | None) -> dict[str, dict[str, Any]]:
     if kline_csv is None:
         return {}
@@ -915,6 +994,7 @@ def enrich_activity_csv(
         rows = list(reader)
         base_fields = list(reader.fieldnames or [])
     binance_settlements = binance_settle_btc_markets(rows, binance_kline_csv)
+    kline_context = binance_row_context(rows, binance_kline_csv)
     cost_by_slug: defaultdict[str, float] = defaultdict(float)
     for row in rows:
         slug = row.get("eventSlug") or row.get("slug") or ""
@@ -963,6 +1043,9 @@ def enrich_activity_csv(
         "marketOutcomePrices",
         "btcOpen",
         "btcClose",
+        "btcTradeClose",
+        "currentAdvantage",
+        "advantageRelation",
         "settlementKlineCsv",
     ]
     fieldnames = list(base_fields)
@@ -970,9 +1053,10 @@ def enrich_activity_csv(
         if field not in fieldnames:
             fieldnames.append(field)
     enriched_rows: list[dict[str, Any]] = []
-    for row in rows:
+    for idx, row in enumerate(rows):
         slug = row.get("eventSlug") or row.get("slug") or ""
         settlement = settlements.get(slug, {})
+        row_context = kline_context.get(idx, {})
         winning = [value for value in str(settlement.get("winningOutcome") or "").split("|") if value]
         status = settlement.get("settlementStatus") or ("SETTLEMENT_NOT_FETCHED" if slug in skipped_slugs else "MISSING_SETTLEMENT")
         outcome = row.get("outcome")
@@ -1003,8 +1087,11 @@ def enrich_activity_csv(
                 "marketEndDate": settlement.get("endDate", ""),
                 "marketClosedTime": settlement.get("closedTime", ""),
                 "marketOutcomePrices": settlement.get("outcomePrices", ""),
-                "btcOpen": settlement.get("btcOpen", ""),
-                "btcClose": settlement.get("btcClose", ""),
+                "btcOpen": settlement.get("btcOpen") or row_context.get("btcOpen", ""),
+                "btcClose": settlement.get("btcClose") or row_context.get("btcClose", ""),
+                "btcTradeClose": row_context.get("btcTradeClose", ""),
+                "currentAdvantage": row_context.get("currentAdvantage", ""),
+                "advantageRelation": row_context.get("advantageRelation", ""),
                 "settlementKlineCsv": settlement.get("klineCsv", ""),
             }
         )
@@ -1024,7 +1111,8 @@ def attach_binance_kline_fields(input_csv: Path, output_csv: Path, binance_kline
         rows = list(reader)
         base_fields = list(reader.fieldnames or [])
     kline_settlements = binance_settle_btc_markets(rows, binance_kline_csv)
-    if not kline_settlements:
+    kline_context = binance_row_context(rows, binance_kline_csv)
+    if not kline_settlements and not kline_context:
         return input_csv
     extra_fields = [
         "settlementStatus",
@@ -1035,6 +1123,9 @@ def attach_binance_kline_fields(input_csv: Path, output_csv: Path, binance_kline
         "marketEndDate",
         "btcOpen",
         "btcClose",
+        "btcTradeClose",
+        "currentAdvantage",
+        "advantageRelation",
         "settlementKlineCsv",
     ]
     fieldnames = list(base_fields)
@@ -1042,19 +1133,26 @@ def attach_binance_kline_fields(input_csv: Path, output_csv: Path, binance_kline
         if field not in fieldnames:
             fieldnames.append(field)
     output_rows: list[dict[str, Any]] = []
-    for row in rows:
+    for idx, row in enumerate(rows):
         slug = row.get("eventSlug") or row.get("slug") or ""
         kline_settlement = kline_settlements.get(slug)
-        if kline_settlement:
+        row_context = kline_context.get(idx, {})
+        if kline_settlement or row_context:
             row = dict(row)
             if not row.get("btcOpen"):
-                row["btcOpen"] = kline_settlement.get("btcOpen", "")
+                row["btcOpen"] = (kline_settlement or {}).get("btcOpen", row_context.get("btcOpen", ""))
             if not row.get("btcClose"):
-                row["btcClose"] = kline_settlement.get("btcClose", "")
+                row["btcClose"] = (kline_settlement or {}).get("btcClose", row_context.get("btcClose", ""))
+            if not row.get("btcTradeClose"):
+                row["btcTradeClose"] = row_context.get("btcTradeClose", "")
+            if not row.get("currentAdvantage"):
+                row["currentAdvantage"] = row_context.get("currentAdvantage", "")
+            if not row.get("advantageRelation"):
+                row["advantageRelation"] = row_context.get("advantageRelation", "")
             if not row.get("settlementKlineCsv"):
-                row["settlementKlineCsv"] = kline_settlement.get("klineCsv", "")
+                row["settlementKlineCsv"] = (kline_settlement or {}).get("klineCsv", str(binance_kline_csv))
             status = str(row.get("settlementStatus") or "")
-            if status in {"", "OPEN", "FETCH_ERROR", "MISSING_SETTLEMENT", "SETTLEMENT_NOT_FETCHED"}:
+            if kline_settlement and status in {"", "OPEN", "FETCH_ERROR", "MISSING_SETTLEMENT", "SETTLEMENT_NOT_FETCHED"}:
                 row["settlementStatus"] = kline_settlement.get("settlementStatus", status)
                 row["winningOutcome"] = kline_settlement.get("winningOutcome", row.get("winningOutcome", ""))
                 row["marketEndDate"] = kline_settlement.get("endDate", row.get("marketEndDate", ""))
@@ -1198,6 +1296,10 @@ def load_trades(path: Path, price_decimals: int) -> tuple[list[Trade], dict[str,
         pnl_raw = row.get("activityPnLUSDC") if "activityPnLUSDC" in row else row.get("tradePnLUSDC")
         payout = clean_float(payout_raw, math.nan)
         pnl = clean_float(pnl_raw, math.nan)
+        btc_open = clean_float(row.get("btcOpen") or row.get("btc_market_open"), math.nan)
+        btc_trade_close = clean_float(row.get("btcTradeClose") or row.get("btc_trade_close"), math.nan)
+        current_advantage = canonical_outcome(row.get("currentAdvantage") or row.get("current_advantage_side") or "")
+        advantage_relation = str(row.get("advantageRelation") or row.get("advantage_relation") or "no_kline")
         trades.append(
             Trade(
                 row_id=idx,
@@ -1219,6 +1321,10 @@ def load_trades(path: Path, price_decimals: int) -> tuple[list[Trade], dict[str,
                 payout=None if math.isnan(payout) else payout,
                 pnl=None if math.isnan(pnl) else pnl,
                 tx_hash=row.get("transactionHash") or "",
+                btc_open=None if math.isnan(btc_open) else btc_open,
+                btc_trade_close=None if math.isnan(btc_trade_close) else btc_trade_close,
+                current_advantage=current_advantage,
+                advantage_relation=advantage_relation,
                 raw=row,
             )
         )
@@ -1248,6 +1354,8 @@ def infer_orders(trades: list[Trade], gap_sec: int) -> list[InferredOrder]:
         order_id = len(orders) + 1
         first = current[0]
         result_counts = Counter(t.result for t in current)
+        relation_counts = Counter(t.advantage_relation or "no_kline" for t in current)
+        advantage_counts = Counter(t.current_advantage or "no_kline" for t in current)
         payout = sum(t.payout or 0.0 for t in current)
         pnl = sum(t.pnl or 0.0 for t in current)
         orders.append(
@@ -1270,6 +1378,8 @@ def infer_orders(trades: list[Trade], gap_sec: int) -> list[InferredOrder]:
                 winning_outcome=first.winning_outcome,
                 market_start=first.market_start,
                 market_end=first.market_end,
+                current_advantage=advantage_counts.most_common(1)[0][0] if advantage_counts else "no_kline",
+                advantage_relation=relation_counts.most_common(1)[0][0] if relation_counts else "no_kline",
             )
         )
 
@@ -1362,8 +1472,8 @@ def market_summaries(trades: list[Trade], orders: list[InferredOrder]) -> list[d
                 "qstar": qstar,
                 "winning_outcome": winning,
                 "net_correct": net_side == winning if winning and net_side in {"Up", "Down"} else None,
-                "first_order_elapsed_sec": median(first_elapsed),
-                "last_order_seconds_before_close": median(last_before_close),
+                "first_order_elapsed_sec": min(first_elapsed) if first_elapsed else math.nan,
+                "last_order_seconds_before_close": min(last_before_close) if last_before_close else math.nan,
             }
         )
     return sorted(rows, key=lambda r: (-r["cost"], r["market"]))
@@ -1377,6 +1487,9 @@ def lifecycle_summary(markets: list[dict[str, Any]], orders: list[InferredOrder]
         abs_nets = [r["abs_net"] for r in group]
         qstars = [r["qstar"] for r in group if math.isfinite(float(r["qstar"]))]
         net_known = [r for r in group if r["net_correct"] is not None]
+        net_weights = [r["abs_net"] for r in net_known]
+        weighted_net_correct = safe_div(sum(r["abs_net"] for r in net_known if r["net_correct"]), sum(net_weights))
+        weighted_qstar = weighted_average(qstars, [r["abs_net"] for r in group if math.isfinite(float(r["qstar"]))])
         interval_orders = [o for o in orders if o.asset == asset and o.interval == interval]
         gaps = order_gaps_by_market(interval_orders)
         first_elapsed = [r["first_order_elapsed_sec"] for r in group]
@@ -1390,7 +1503,9 @@ def lifecycle_summary(markets: list[dict[str, Any]], orders: list[InferredOrder]
                 "fills": sum(r["fills"] for r in group),
                 "both_sides_rate": safe_div(sum(1 for r in group if r["both_sides"]), len(group)),
                 "net_correct_rate": safe_div(sum(1 for r in net_known if r["net_correct"]), len(net_known)),
-                "weighted_qstar": weighted_average(qstars, [r["abs_net"] for r in group if math.isfinite(float(r["qstar"]))]),
+                "weighted_net_correct_rate": weighted_net_correct,
+                "weighted_qstar": weighted_qstar,
+                "qstar_margin": weighted_net_correct - weighted_qstar,
                 "median_first_order_elapsed_sec": median(first_elapsed),
                 "median_last_order_seconds_before_close": median(last_before),
                 "median_market_order_gap_sec": median(gaps),
@@ -1639,6 +1754,288 @@ def sequence_summary(orders: list[InferredOrder]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: (r["asset"], r["interval"], r["prev_expost"], r["order_expost_side"]))
 
 
+def order_inventory_path(orders: list[InferredOrder]) -> list[dict[str, Any]]:
+    up = down = cost = 0.0
+    rows: list[dict[str, Any]] = []
+    for idx, order in enumerate(sorted(orders, key=lambda o: (o.first_ts, o.order_id)), start=1):
+        if order.side == "BUY":
+            if order.outcome == "Up":
+                up += order.shares
+            elif order.outcome == "Down":
+                down += order.shares
+            cost += order.cost
+        net_side, abs_net, qstar = qstar_for(up, down, cost)
+        rows.append(
+            {
+                "idx": idx,
+                "order": order,
+                "up": up,
+                "down": down,
+                "cost": cost,
+                "net_side": net_side,
+                "abs_net": abs_net,
+                "qstar": qstar,
+            }
+        )
+    return rows
+
+
+def qstar_anchor_summary(markets: list[dict[str, Any]], orders: list[InferredOrder]) -> list[dict[str, Any]]:
+    market_by_slug = {row["market"]: row for row in markets}
+    anchors = [
+        ("after_first", 0.0),
+        ("after_25pct_orders", 0.25),
+        ("after_50pct_orders", 0.50),
+        ("after_75pct_orders", 0.75),
+        ("after_last", 1.0),
+    ]
+    raw_rows: list[dict[str, Any]] = []
+    for market, group in groupby_many(orders, lambda o: o.market).items():
+        path = order_inventory_path(group)
+        if not path:
+            continue
+        market_row = market_by_slug.get(market, {})
+        winning = market_row.get("winning_outcome", "")
+        interval = market_row.get("interval") or path[0]["order"].interval
+        for anchor, frac in anchors:
+            idx = min(len(path) - 1, max(0, int(round((len(path) - 1) * frac))))
+            row = path[idx]
+            order = row["order"]
+            net_side = row["net_side"]
+            elapsed_frac = None
+            if order.market_start is not None and order.market_end is not None and order.market_end > order.market_start:
+                elapsed_frac = (order.first_ts - order.market_start) / (order.market_end - order.market_start)
+            raw_rows.append(
+                {
+                    "interval": interval,
+                    "anchor": anchor,
+                    "market": market,
+                    "qstar": row["qstar"],
+                    "abs_net": row["abs_net"],
+                    "cost": row["cost"],
+                    "elapsed_frac": elapsed_frac if elapsed_frac is not None else math.nan,
+                    "net_correct": net_side == winning if winning and net_side in {"Up", "Down"} else None,
+                }
+            )
+    rows: list[dict[str, Any]] = []
+    anchor_order = {name: idx for idx, (name, _) in enumerate(anchors)}
+    for key, group in groupby_many(raw_rows, lambda r: (r["interval"], r["anchor"])).items():
+        interval, anchor = key
+        net_known = [r for r in group if r["net_correct"] is not None]
+        rows.append(
+            {
+                "interval": interval,
+                "anchor": anchor,
+                "markets": len({r["market"] for r in group}),
+                "median_qstar": median([r["qstar"] for r in group]),
+                "median_abs_net_shares": median([r["abs_net"] for r in group]),
+                "median_cost_so_far": median([r["cost"] for r in group]),
+                "median_elapsed_frac": median([r["elapsed_frac"] for r in group]),
+                "net_correct_rate": safe_div(sum(1 for r in net_known if r["net_correct"]), len(net_known)),
+            }
+        )
+    return sorted(rows, key=lambda r: (r["interval"], anchor_order.get(r["anchor"], 99)))
+
+
+def final_net_lock_summary(markets: list[dict[str, Any]], orders: list[InferredOrder]) -> list[dict[str, Any]]:
+    raw_rows: list[dict[str, Any]] = []
+    for market, group in groupby_many(orders, lambda o: o.market).items():
+        path = order_inventory_path(group)
+        if not path:
+            continue
+        final = path[-1]
+        final_side = final["net_side"]
+        if final_side not in {"Up", "Down"}:
+            continue
+        lock_idx = None
+        for idx, row in enumerate(path):
+            if row["net_side"] == final_side and all(later["net_side"] == final_side for later in path[idx:]):
+                lock_idx = idx
+                break
+        if lock_idx is None:
+            continue
+        lock = path[lock_idx]
+        order = lock["order"]
+        elapsed_frac = math.nan
+        if order.market_start is not None and order.market_end is not None and order.market_end > order.market_start:
+            elapsed_frac = (order.first_ts - order.market_start) / (order.market_end - order.market_start)
+        raw_rows.append(
+            {
+                "interval": order.interval,
+                "market": market,
+                "lock_elapsed_frac": elapsed_frac,
+                "lock_cost_fraction": safe_div(lock["cost"], final["cost"]),
+                "final_abs_net": final["abs_net"],
+                "final_qstar": final["qstar"],
+                "orders_before_lock": lock_idx + 1,
+                "total_orders": len(path),
+            }
+        )
+    rows: list[dict[str, Any]] = []
+    order_markets = {market for market, _ in groupby_many(orders, lambda o: o.market).items()}
+    for interval, group in groupby_many(raw_rows, lambda r: r["interval"]).items():
+        interval_order_markets = {o.market for o in orders if o.interval == interval}
+        rows.append(
+            {
+                "interval": interval,
+                "markets": len(interval_order_markets),
+                "locked_markets": len({r["market"] for r in group}),
+                "lock_rate": safe_div(len({r["market"] for r in group}), len(interval_order_markets)),
+                "median_lock_elapsed_frac": median([r["lock_elapsed_frac"] for r in group]),
+                "median_lock_cost_fraction": median([r["lock_cost_fraction"] for r in group]),
+                "median_orders_before_lock": median([r["orders_before_lock"] for r in group]),
+                "median_final_abs_net": median([r["final_abs_net"] for r in group]),
+                "median_final_qstar": median([r["final_qstar"] for r in group]),
+            }
+        )
+    return sorted(rows, key=lambda r: r["interval"])
+
+
+def advantage_summary(trades: list[Trade]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    interval_totals: defaultdict[str, float] = defaultdict(float)
+    for trade in trades:
+        interval_totals[trade.interval] += trade.usdc
+    for key, group in groupby_many(trades, lambda t: (t.interval, t.advantage_relation or "no_kline")).items():
+        interval, relation = key
+        cost = sum(t.usdc for t in group)
+        pnl = sum(t.pnl or 0.0 for t in group)
+        resolved = [t for t in group if t.result in {"WIN", "LOSS"}]
+        rows.append(
+            {
+                "interval": interval,
+                "advantage_relation": relation,
+                "fills": len(group),
+                "markets": len({t.slug for t in group}),
+                "cost": cost,
+                "cost_share": safe_div(cost, interval_totals[interval]),
+                "pnl": pnl,
+                "roi": safe_div(pnl, cost),
+                "win_rate": safe_div(sum(1 for t in resolved if t.result == "WIN"), len(resolved)),
+            }
+        )
+    return sorted(rows, key=lambda r: (r["interval"], -r["cost"]))
+
+
+def advantage_streak_summary(orders: list[InferredOrder]) -> list[dict[str, Any]]:
+    streaks: list[dict[str, Any]] = []
+    for market, group in groupby_many(orders, lambda o: o.market).items():
+        seq = sorted(group, key=lambda o: (o.first_ts, o.order_id))
+        prev = ""
+        length = 0
+        cost = 0.0
+
+        def flush(relation: str, run_length: int, run_cost: float, interval: str) -> None:
+            if relation:
+                streaks.append({"market": market, "interval": interval, "relation": relation, "length": run_length, "cost": run_cost})
+
+        for order in seq:
+            relation = order.advantage_relation or "no_kline"
+            if relation == prev:
+                length += 1
+                cost += order.cost
+            else:
+                if prev:
+                    flush(prev, length, cost, order.interval)
+                prev = relation
+                length = 1
+                cost = order.cost
+        if prev and seq:
+            flush(prev, length, cost, seq[-1].interval)
+    rows: list[dict[str, Any]] = []
+    for key, group in groupby_many(streaks, lambda r: (r["interval"], r["relation"])).items():
+        interval, relation = key
+        rows.append(
+            {
+                "interval": interval,
+                "relation": relation,
+                "streaks": len(group),
+                "markets": len({r["market"] for r in group}),
+                "median_streak_orders": median([r["length"] for r in group]),
+                "p90_streak_orders": percentile([r["length"] for r in group], 0.90),
+                "max_streak_orders": max((r["length"] for r in group), default=0),
+                "cost": sum(r["cost"] for r in group),
+            }
+        )
+    return sorted(rows, key=lambda r: (r["interval"], -r["cost"]))
+
+
+def pearson(xs: list[float], ys: list[float]) -> float:
+    pairs = [(x, y) for x, y in zip(xs, ys) if math.isfinite(float(x)) and math.isfinite(float(y))]
+    if len(pairs) < 2:
+        return math.nan
+    x_values = [p[0] for p in pairs]
+    y_values = [p[1] for p in pairs]
+    x_mean = sum(x_values) / len(x_values)
+    y_mean = sum(y_values) / len(y_values)
+    x_var = sum((x - x_mean) ** 2 for x in x_values)
+    y_var = sum((y - y_mean) ** 2 for y in y_values)
+    if x_var <= 0 or y_var <= 0:
+        return math.nan
+    cov = sum((x - x_mean) * (y - y_mean) for x, y in pairs)
+    return cov / math.sqrt(x_var * y_var)
+
+
+def size_price_diagnostic(orders: list[InferredOrder]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for interval, group in groupby_many(orders, lambda o: o.interval).items():
+        costs = [o.cost for o in group]
+        lots = [round(o.shares, 2) for o in group]
+        lot_counts = Counter(lots)
+        top_lot, top_count = lot_counts.most_common(1)[0] if lot_counts else (math.nan, 0)
+        corr = pearson([o.price_level for o in group], [o.shares for o in group])
+        if len(group) < 30:
+            verdict = "insufficient_sample_for_kelly_test"
+        elif not math.isfinite(corr) or abs(corr) < 0.35:
+            verdict = "not_kelly_discrete_lot"
+        else:
+            verdict = "needs_edge_model_check"
+        rows.append(
+            {
+                "interval": interval,
+                "orders": len(group),
+                "cost": sum(costs),
+                "median_order_shares": median([o.shares for o in group]),
+                "p95_order_shares": percentile([o.shares for o in group], 0.95),
+                "distinct_lot_count": len(lot_counts),
+                "top_lot_shares": top_lot,
+                "top_lot_order_share": safe_div(top_count, len(group)),
+                "price_share_corr": corr,
+                "kelly_verdict": verdict,
+            }
+        )
+    return sorted(rows, key=lambda r: (-r["cost"], r["interval"]))
+
+
+def interval_mode_summary(interval_rows: list[dict[str, Any]], lifecycle_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lifecycle_by_interval = {row["interval"]: row for row in lifecycle_rows}
+    rows: list[dict[str, Any]] = []
+    for row in interval_rows:
+        interval = row["interval"]
+        lifecycle = lifecycle_by_interval.get(interval, {})
+        roi = row.get("roi", math.nan)
+        qstar_margin = lifecycle.get("qstar_margin", math.nan)
+        both_rate = lifecycle.get("both_sides_rate", math.nan)
+        if interval == "5m" and math.isfinite(roi) and roi > 0 and math.isfinite(qstar_margin) and qstar_margin >= 0:
+            mode = "primary_candidate"
+        elif math.isfinite(roi) and roi > 0:
+            mode = "shadow_only_positive_pnl_unproven_qstar"
+        else:
+            mode = "disable_live_or_shadow_only"
+        rows.append(
+            {
+                "interval": interval,
+                "markets": row.get("markets", 0),
+                "cost": row.get("cost", math.nan),
+                "roi": roi,
+                "qstar_margin": qstar_margin,
+                "both_sides_rate": both_rate,
+                "recommended_mode": mode,
+            }
+        )
+    return rows
+
+
 def choose_primary_segment(lifecycle: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not lifecycle:
         return None
@@ -1713,6 +2110,8 @@ def worked_example(markets: list[dict[str, Any]], orders: list[InferredOrder]) -
             {
                 "ts_utc": dt.datetime.fromtimestamp(order.first_ts, dt.timezone.utc).isoformat(),
                 "outcome": order.outcome,
+                "current_advantage": order.current_advantage,
+                "advantage_relation": order.advantage_relation,
                 "side": order.side,
                 "price": order.price_level,
                 "shares": order.shares,
@@ -1745,6 +2144,12 @@ def generate_report(
     price_rows: list[dict[str, Any]],
     phase_rows: list[dict[str, Any]],
     sequence_rows: list[dict[str, Any]],
+    qstar_anchor_rows: list[dict[str, Any]],
+    final_lock_rows: list[dict[str, Any]],
+    advantage_rows: list[dict[str, Any]],
+    advantage_streak_rows: list[dict[str, Any]],
+    size_diagnostic_rows: list[dict[str, Any]],
+    interval_mode_rows: list[dict[str, Any]],
 ) -> tuple[Path, dict[str, Any]]:
     generated = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     primary = choose_primary_segment(lifecycle_rows)
@@ -1759,6 +2164,9 @@ def generate_report(
     net_known = [m for m in market_rows if m["net_correct"] is not None]
     net_correct = safe_div(sum(1 for m in net_known if m["net_correct"]), len(net_known))
     multi_fill_order_rate = safe_div(sum(1 for o in orders if o.fill_count > 1), len(orders))
+    kline_trades = [t for t in trades if t.advantage_relation and t.advantage_relation != "no_kline"]
+    advantage_coverage = safe_div(len(kline_trades), len(trades))
+    primary_mode = next((r for r in interval_mode_rows if r.get("recommended_mode") == "primary_candidate"), interval_mode_rows[0] if interval_mode_rows else {})
     report_path = out_dir / "strategy_replication_report.md"
     min_data_warning = ""
     if len(market_rows) < args.min_report_markets:
@@ -1778,13 +2186,26 @@ def generate_report(
         f"- BTC Up/Down 成交行：`{len(trades):,}`；市场：`{len(market_rows):,}`；inferred orders：`{len(orders):,}`。\n"
         f"- 总成本：`{fmt_num(total_cost)}`；已结算/已拉取成本：`{fmt_num(resolved_cost)}`；"
         f"已标记 PnL：`{fmt_num(total_pnl)}`；resolved ROI：`{fmt_pct(safe_div(total_pnl, resolved_cost))}`。\n"
-        f"- BUY-only：`{buy_only}`；market both-side rate：`{fmt_pct(both_sides_rate)}`；multi-fill order rate：`{fmt_pct(multi_fill_order_rate)}`；final net correct：`{fmt_pct(net_correct)}`。"
+        f"- BUY-only：`{buy_only}`；market both-side rate：`{fmt_pct(both_sides_rate)}`；multi-fill order rate：`{fmt_pct(multi_fill_order_rate)}`；final net correct：`{fmt_pct(net_correct)}`。\n"
+        f"- BTCUSDT 当前优势边覆盖率：`{fmt_pct(advantage_coverage)}`；推荐主模式：`{primary_mode.get('interval', 'n/a')}` / `{primary_mode.get('recommended_mode', 'n/a')}`。"
     )
     lines.append(min_data_warning)
     lines.append(
         "\n本报告的复刻边界是“从地址成交历史复刻可观察行为与可验证执行规则”。"
         "若没有订单 ID、撤单、未成交单、maker/taker 标记、队列位置和底层价格路径，本报告不会声称拿到了真实源码。"
         "它会把可确定事实、强推断、弱推断和 live 上线前必须补的数据分开。"
+    )
+
+    lines.append("\n## 证据范围与口径\n")
+    lines.append(
+        f"- 主输入：`{input_csv}`。\n"
+        f"- settlement 口径：`activityOutcomeResult/tradeOutcomeResult` 与 `activityPnLUSDC/tradePnLUSDC`，resolved 成本覆盖 `{fmt_pct(safe_div(resolved_cost, total_cost))}`。\n"
+        f"- BTCUSDT kline 口径：`btcOpen/btcTradeClose/currentAdvantage/advantageRelation`，当前优势边覆盖 `{fmt_pct(advantage_coverage)}`。\n"
+        f"- inferred order 口径：同 market/outcome/side/rounded price，fill gap <= `{args.order_gap_sec}s`。\n"
+        f"- quote batch 口径：同 market 内 inferred order first timestamp gap <= `{args.batch_gap_sec}s`。\n"
+        "- 确定事实：成交行、价格、size、时间、side、settlement、PnL、BTC 当前优势边字段。\n"
+        "- 强推断：限价挂单风格、微阶梯、双边库存、q* gate、顺/逆势候选池。\n"
+        "- 不可直接确定：真实 order id、撤单、未成交单、maker/taker、队列位置、完整 L2、真实 alpha 系数、账户级 bankroll。"
     )
 
     lines.append("\n## 一页机制图\n")
@@ -1849,6 +2270,25 @@ def generate_report(
             ],
         )
     )
+    lines.append("\n### 5m/15m 实盘范围判定\n")
+    lines.append(
+        markdown_table(
+            interval_mode_rows,
+            [
+                ("interval", "interval"),
+                ("markets", "markets"),
+                ("cost", "cost"),
+                ("roi", "roi"),
+                ("qstar_margin", "qstar_margin"),
+                ("both_sides_rate", "both_sides_rate"),
+                ("recommended_mode", "recommended_mode"),
+            ],
+        )
+    )
+    lines.append(
+        "\n判定规则：只有 ROI、q* margin、双边库存和样本量同时过关的 interval 才能成为主策略候选；"
+        "其余 interval 即使短期盈利，也默认 `shadow_only`，不能把一个地址的历史收益直接外推成 live 参数。"
+    )
 
     lines.append("\n## 生命周期、频率和库存质量\n")
     lines.append(
@@ -1861,7 +2301,9 @@ def generate_report(
                 ("orders", "orders"),
                 ("both_sides_rate", "both_sides_rate"),
                 ("net_correct_rate", "net_correct_rate"),
+                ("weighted_net_correct_rate", "weighted_net_correct"),
                 ("weighted_qstar", "weighted_qstar"),
+                ("qstar_margin", "qstar_margin"),
                 ("median_first_order_elapsed_sec", "first_s"),
                 ("median_last_order_seconds_before_close", "last_before_close_s"),
                 ("median_market_order_gap_sec", "gap_s"),
@@ -1959,6 +2401,28 @@ def generate_report(
         "\n判定规则：如果 shares 在价格桶间主要是离散 lot 且不随 edge 连续缩放，就不能称为 Kelly。"
         "复刻实现默认使用离散 lot + rank multiplier + q*/budget gate，而不是 `stake = bankroll * Kelly(p, price)`。"
     )
+    lines.append("\n### Size/Kelly 诊断表\n")
+    lines.append(
+        markdown_table(
+            size_diagnostic_rows,
+            [
+                ("interval", "interval"),
+                ("orders", "orders"),
+                ("cost", "cost"),
+                ("median_order_shares", "median_shares"),
+                ("p95_order_shares", "p95_shares"),
+                ("distinct_lot_count", "distinct_lots"),
+                ("top_lot_shares", "top_lot"),
+                ("top_lot_order_share", "top_lot_order_share"),
+                ("price_share_corr", "price_share_corr"),
+                ("kelly_verdict", "verdict"),
+            ],
+        )
+    )
+    lines.append(
+        "\n如果 `price_share_corr` 不强、`top_lot_order_share` 明显、且 median/p95 shares 呈离散档位，"
+        "应实现为 `base_lot_shares -> rank_multiplier -> risk_multiplier`，而不是 Kelly 连续下注函数。"
+    )
 
     lines.append("\n## 市场阶段收益\n")
     lines.append(
@@ -2008,6 +2472,48 @@ def generate_report(
         "```\n\n"
         "每个候选订单必须先模拟成交后库存，再用 `p_side >= q*_after + required_margin` 判断是否扩大净风险。"
     )
+    lines.append("\n### q* 动态锚点\n")
+    lines.append(
+        markdown_table(
+            qstar_anchor_rows,
+            [
+                ("interval", "interval"),
+                ("anchor", "anchor"),
+                ("markets", "markets"),
+                ("median_qstar", "median_qstar"),
+                ("median_abs_net_shares", "median_abs_net"),
+                ("median_cost_so_far", "median_cost_so_far"),
+                ("median_elapsed_frac", "median_elapsed_frac"),
+                ("net_correct_rate", "net_correct_rate"),
+            ],
+            max_rows=40,
+        )
+    )
+    lines.append(
+        "\n解释：如果 `after_first` 接近随机而 `after_last` 明显更好，说明方向 alpha 不是开盘一次性给定，"
+        "而是在运行中由 BTC 路径、盘口和库存约束逐步形成。复刻时应控制 `qstar_after <= p_side - buffer`，不是追一个固定 q*。"
+    )
+    lines.append("\n### 最终净仓锁定时点\n")
+    lines.append(
+        markdown_table(
+            final_lock_rows,
+            [
+                ("interval", "interval"),
+                ("markets", "markets"),
+                ("locked_markets", "locked_markets"),
+                ("lock_rate", "lock_rate"),
+                ("median_lock_elapsed_frac", "lock_elapsed_frac"),
+                ("median_lock_cost_fraction", "lock_cost_fraction"),
+                ("median_orders_before_lock", "orders_before_lock"),
+                ("median_final_abs_net", "final_abs_net"),
+                ("median_final_qstar", "final_qstar"),
+            ],
+        )
+    )
+    lines.append(
+        "\n锁定含义：第一次出现最终净边并且之后不再切换。若锁定发生在市场中后段，说明前期更像建立可调整库存，"
+        "而不是一开盘就单边押注。"
+    )
 
     lines.append("\n## alpha 与方向来源\n")
     lines.append(
@@ -2037,6 +2543,50 @@ def generate_report(
         "  - clean_book_implied_probability\n"
         "fallback_without_btcusdt_kline: research_report_only_no_live_orders\n"
         "```\n"
+    )
+    lines.append("\n### 当前优势边成交关系\n")
+    lines.append(
+        markdown_table(
+            advantage_rows,
+            [
+                ("interval", "interval"),
+                ("advantage_relation", "relation"),
+                ("fills", "fills"),
+                ("markets", "markets"),
+                ("cost", "cost"),
+                ("cost_share", "cost_share"),
+                ("pnl", "pnl"),
+                ("roi", "roi"),
+                ("win_rate", "win_rate"),
+            ],
+            max_rows=40,
+        )
+    )
+    lines.append(
+        "\n`with_current_advantage` 表示成交 outcome 与成交秒 BTC 相对开盘方向一致；"
+        "`against_current_advantage` 表示优势边为 Up 时成交 Down，或优势边为 Down 时成交 Up。"
+        "若逆势成本占比不是接近 0，它就是策略结构的一部分；复刻时只能在便宜 optionality、库存修复或 alpha 模糊时保留，不能追价。"
+    )
+    lines.append("\n### 顺势/逆势连续成交 streak\n")
+    lines.append(
+        markdown_table(
+            advantage_streak_rows,
+            [
+                ("interval", "interval"),
+                ("relation", "relation"),
+                ("streaks", "streaks"),
+                ("markets", "markets"),
+                ("median_streak_orders", "median_streak_orders"),
+                ("p90_streak_orders", "p90_streak_orders"),
+                ("max_streak_orders", "max_streak_orders"),
+                ("cost", "cost"),
+            ],
+            max_rows=40,
+        )
+    )
+    lines.append(
+        "\n这张表用于识别它是否机械地强弱边轮换。若顺势或逆势 streak 明显存在，复刻逻辑应是两个独立 candidate pool "
+        "分别过 q*/net/budget/book gate，而不是“买完强边必须买弱边”。"
     )
 
     lines.append("\n## 样本派生的复刻配置\n")
@@ -2100,6 +2650,57 @@ def generate_report(
         "```\n"
     )
 
+    lines.append("\n## Live 实现数据模型\n")
+    lines.append(
+        "```python\n"
+        "@dataclass\n"
+        "class MarketState:\n"
+        "    slug: str\n"
+        "    interval: Literal['5m', '15m']\n"
+        "    open_time: datetime\n"
+        "    close_time: datetime\n"
+        "    now: datetime\n"
+        "    elapsed_s: float\n"
+        "    seconds_to_close: float\n"
+        "    btc_open: float\n"
+        "    btc_now: float\n"
+        "    p_up: float\n"
+        "    p_down: float\n"
+        "    current_advantage: Literal['Up', 'Down', 'Tie']\n"
+        "    up_book: SideBook\n"
+        "    down_book: SideBook\n"
+        "    inventory: InventoryState\n"
+        "    market_budget_used: float\n"
+        "\n"
+        "@dataclass\n"
+        "class InventoryState:\n"
+        "    up_shares: float\n"
+        "    down_shares: float\n"
+        "    total_cost: float\n"
+        "\n"
+        "    def qstar(self) -> float | None:\n"
+        "        if self.up_shares > self.down_shares:\n"
+        "            return (self.total_cost - self.down_shares) / (self.up_shares - self.down_shares)\n"
+        "        if self.down_shares > self.up_shares:\n"
+        "            return (self.total_cost - self.up_shares) / (self.down_shares - self.up_shares)\n"
+        "        return None\n"
+        "\n"
+        "@dataclass\n"
+        "class CandidateOrder:\n"
+        "    side: Literal['Up', 'Down']\n"
+        "    rank: int\n"
+        "    limit_price: Decimal\n"
+        "    shares: Decimal\n"
+        "    reason: Literal['expand', 'trim', 'cheap_optionality', 'new_net']\n"
+        "    p_side: float\n"
+        "    qstar_after: float | None\n"
+        "    abs_net_after: float\n"
+        "    budget_after: float\n"
+        "    post_only: bool = True\n"
+        "    ttl_s: int = 4\n"
+        "```\n"
+    )
+
     lines.append("\n## 价格、阶梯和 size 规则\n")
     lines.append(
         "```text\n"
@@ -2130,6 +2731,78 @@ def generate_report(
         "```\n"
     )
 
+    lines.append("\n## Candidate 生成与 risk gate 伪代码\n")
+    lines.append(
+        "默认辅助函数必须按以下阈值实现，不能留成空壳：\n\n"
+        "```text\n"
+        "book_quality_clean(book):\n"
+        "  book.age_ms <= 500\n"
+        "  recv_lag_ms <= 500\n"
+        "  best_bid < best_ask\n"
+        "  spread <= 0.03\n"
+        "  top_size_shares >= 5\n"
+        "\n"
+        "required_margin(market): qstar_required_margin = 0.025 unless shadow calibration overwrites it\n"
+        "dynamic_budget_cap(market): min(market_budget_hard_cap_usdc, market_budget_soft_cap_usdc * edge_multiplier)\n"
+        "dynamic_net_cap(market, side): min(abs_net_hard_cap_shares, abs_net_soft_cap_shares * edge_multiplier)\n"
+        "edge_multiplier: clamp((abs(p_side - 0.5) - 0.03) / 0.07, 0.40, 1.00)\n"
+        "is_materially_cheap(order): p_side - limit_price >= 0.060 for weak side, 0.030 for strong side\n"
+        "```\n"
+    )
+    lines.append(
+        "```python\n"
+        "def build_ladder_candidates(market, side, p_side, inventory):\n"
+        "    book = market.book(side)\n"
+        "    if not book_quality_clean(book):\n"
+        "        return []\n"
+        "\n"
+        "    fair_cap = p_side - qstar_buffer(market, side) - execution_buffer(market) - fee_buffer(book)\n"
+        "    book_cap = book.best_ask - book.tick\n"
+        "    join_cap = book.best_bid + book.tick if book.best_bid < book.best_ask else book_cap\n"
+        "    anchor = floor_to_tick(min(fair_cap, book_cap, join_cap), book.tick)\n"
+        "    if anchor <= 0:\n"
+        "        return []\n"
+        "\n"
+        "    out = []\n"
+        "    for rank, offset in enumerate([0, 1, 2, 3, 5, 8], start=1):\n"
+        "        price = anchor - offset * book.tick\n"
+        "        shares = lot_size_for_rank_price(rank, price, market, side)\n"
+        "        simulated = inventory.after_buy(side, price, shares)\n"
+        "        out.append(CandidateOrder(\n"
+        "            side=side,\n"
+        "            rank=rank,\n"
+        "            limit_price=price,\n"
+        "            shares=shares,\n"
+        "            reason=classify_reason(inventory, simulated, side, market.current_advantage, p_side),\n"
+        "            p_side=p_side,\n"
+        "            qstar_after=simulated.qstar(),\n"
+        "            abs_net_after=simulated.abs_net,\n"
+        "            budget_after=simulated.total_cost,\n"
+        "        ))\n"
+        "    return out\n"
+        "\n"
+        "def risk_gate_accepts(order, market, inventory):\n"
+        "    if market.interval != '5m':\n"
+        "        return False\n"
+        "    if market.seconds_to_close < stop_new_orders_before_close_s:\n"
+        "        return False\n"
+        "    if order.limit_price >= market.book(order.side).best_ask:\n"
+        "        return False\n"
+        "    if order.budget_after > dynamic_budget_cap(market):\n"
+        "        return False\n"
+        "\n"
+        "    if order.reason in {'expand', 'new_net'}:\n"
+        "        if order.abs_net_after > dynamic_net_cap(market, order.side):\n"
+        "            return False\n"
+        "        return order.qstar_after is not None and order.p_side >= order.qstar_after + required_margin(market)\n"
+        "\n"
+        "    if order.reason in {'trim', 'cheap_optionality'}:\n"
+        "        return improves_qstar(order, inventory) or reduces_abs_net(order, inventory) or is_materially_cheap(order)\n"
+        "\n"
+        "    return False\n"
+        "```\n"
+    )
+
     lines.append("\n## 回放、shadow 和上线 gate\n")
     lines.append(
         "```yaml\n"
@@ -2141,7 +2814,7 @@ def generate_report(
         "    roi_after_fee: '> 0'\n"
         "    rolling_100_market_pnl: '> 0'\n"
         "    qstar_margin: '>= 1.5 percentage points when q* is applicable'\n"
-        "    behavior_distance: lifecycle, ladder, budget, and inventory metrics within sample p25-p75 or explained\n"
+        "    behavior_distance: lifecycle, ladder, budget, and inventory metrics within observed median +/- 25%, or explained\n"
         "shadow_required:\n"
         "  duration_days: 7\n"
         "  outputs: [order_intents.ndjson, simulated_fills.ndjson, inventory_snapshots.ndjson, scorecard.csv]\n"
@@ -2152,6 +2825,30 @@ def generate_report(
         "```\n"
     )
 
+    lines.append("\n## 行为复刻 Scorecard\n")
+    primary_interval = config.get("interval", "")
+    primary_order = next((row for row in order_rows if row.get("interval") == primary_interval), {})
+    primary_batch = next((row for row in batch_rows if row.get("interval") == primary_interval), {})
+    primary_lifecycle = next((row for row in lifecycle_rows if row.get("interval") == primary_interval), {})
+    primary_ladder_rank1 = next((row for row in ladder_rows if row.get("interval") == primary_interval and row.get("rank_bucket") == "1"), {})
+    scorecard_rows = [
+        {"metric": "5m ROI after fees", "target": "> 0", "reason": "收益为必要但不充分条件"},
+        {"metric": "qstar_margin", "target": ">= 1.5pp when applicable", "reason": "净仓方向必须覆盖 q*"},
+        {"metric": "weighted_net_correct", "target": f"{fmt_pct(primary_lifecycle.get('weighted_net_correct_rate', math.nan))} +/- 25%", "reason": "方向质量不能退化"},
+        {"metric": "both_sides_market_rate", "target": "90%-99%", "reason": "生命周期双边库存特征"},
+        {"metric": "both_side_batch_rate", "target": f"{fmt_pct(primary_batch.get('both_side_batch_rate', math.nan))} +/- 25%", "reason": "每轮不机械双边"},
+        {"metric": "median_first_order_elapsed", "target": f"{fmt_num(config.get('start_quote_after_open_sec', math.nan))}s +/- 25%", "reason": "开始挂单时点"},
+        {"metric": "median_last_before_close", "target": f"{fmt_num(config.get('stop_new_orders_before_close_sec', math.nan))}s +/- 25%", "reason": "避免末秒追单"},
+        {"metric": "median_order_gap", "target": f"{fmt_num(config.get('quote_refresh_sec', math.nan))}s +/- 25%", "reason": "刷新频率"},
+        {"metric": "multi_fill_order_rate", "target": f"{fmt_pct(primary_order.get('multi_fill_order_rate', math.nan))} +/- 25%", "reason": "限价挂单代理"},
+        {"metric": "rank1 ladder cost share", "target": f"{fmt_pct(primary_ladder_rank1.get('cost_share', math.nan))} +/- 25%", "reason": "微阶梯形状"},
+        {"metric": "median_order_shares", "target": f"{fmt_num(config.get('median_order_shares', math.nan))} +/- 25%", "reason": "离散 lot 复刻"},
+        {"metric": "against_current_cost_share", "target": "nonzero but gated", "reason": "弱边 optionality/库存修复"},
+        {"metric": "stale_or_crossing_cost_share", "target": "<= 5%", "reason": "禁止追价和 stale book"},
+        {"metric": "15m live exposure", "target": "0 unless separately proven", "reason": "15m 默认不继承 5m 结论"},
+    ]
+    lines.append(markdown_table(scorecard_rows, [("metric", "metric"), ("target", "target"), ("reason", "reason")], max_rows=40))
+
     lines.append("\n## PnL 归因框架\n")
     lines.append(
         "- Direction alpha：最终净仓是否偏向 winning outcome。\n"
@@ -2160,6 +2857,46 @@ def generate_report(
         "- Adverse selection：高价、临近收盘、stale book 或连续错误净仓导致的亏损。\n"
         "- Fees/rebates：CSV 未完全暴露时必须做敏感性，而不是只看毛收益。\n"
         "- Capacity：用 p95/p99 market cost 和 top-of-book notional 验证，不能线性放大。"
+    )
+
+    lines.append("\n## 实现模块拆分与交付顺序\n")
+    lines.append(
+        "```text\n"
+        "btc_updown_replica/\n"
+        "  data_layer/\n"
+        "    polymarket_activity_loader.py\n"
+        "    btcusdt_kline_store.py\n"
+        "    polymarket_orderbook_store.py\n"
+        "  signal_layer/\n"
+        "    probability_engine.py\n"
+        "    diffusion_probability.py\n"
+        "    calibration.py\n"
+        "  inventory_layer/\n"
+        "    qstar.py\n"
+        "    inventory_state.py\n"
+        "    inventory_targets.py\n"
+        "  execution_layer/\n"
+        "    ladder_quote_engine.py\n"
+        "    risk_gate.py\n"
+        "    post_only_router.py\n"
+        "    order_reconciler.py\n"
+        "  replay/\n"
+        "    trade_csv_replay.py\n"
+        "    orderbook_fill_simulator.py\n"
+        "    behavior_scorecard.py\n"
+        "  monitoring/\n"
+        "    shadow_logger.py\n"
+        "    regime_monitor.py\n"
+        "    kill_switch.py\n"
+        "```\n\n"
+        "最低交付顺序：\n\n"
+        "1. `qstar.py`：纯函数测试，锁死 q* 公式。\n"
+        "2. `inventory_state.py`：支持模拟成交后的 U/D/C、q*、abs_net。\n"
+        "3. `probability_engine.py`：用 BTCUSDT 1s 特征产出校准后的 `p_up/p_down`。\n"
+        "4. `ladder_quote_engine.py`：生成 post-only BUY 微阶梯候选。\n"
+        "5. `risk_gate.py`：实现 q*/net/budget/book/current_advantage gate。\n"
+        "6. `orderbook_fill_simulator.py`：用 1s orderbook 回放 passive fill 代理。\n"
+        "7. `post_only_router.py`：最后接真实 CLOB，默认 dry-run。"
     )
 
     lines.append("\n## Worked Example\n")
@@ -2174,6 +2911,8 @@ def generate_report(
                 [
                     ("ts_utc", "ts_utc"),
                     ("outcome", "outcome"),
+                    ("current_advantage", "current_adv"),
+                    ("advantage_relation", "adv_relation"),
                     ("side", "side"),
                     ("price", "price"),
                     ("shares", "shares"),
@@ -2193,10 +2932,23 @@ def generate_report(
 
     lines.append("\n## 已确定、未知和禁止外推\n")
     lines.append(
-        "已确定：成交时间、价格、size、side、market、settlement labels、PnL 字段、inferred order 代理、库存账本。\n\n"
-        "强推断：限价/挂单风格、阶梯结构、预算分布、q* 控制、final net 方向质量。\n\n"
-        "未知：未成交单、撤单、maker/taker、队列位置、完整 L2、真实外部 alpha、账户总资金、隐藏 hedge。\n\n"
-        "禁止外推：不要把 ex-post winner 直接写成 live alpha；不要把 median cost 写成固定 cap；不要把离散 lot 写成 Kelly。"
+        "已确定：\n\n"
+        "1. 成交时间、价格、size、side、market、settlement labels、PnL 字段。\n"
+        "2. BTC-only 过滤后的市场、interval、生命周期、成本和收益分布。\n"
+        "3. inferred order、quote batch、ladder rank、price band、phase、q* 账本的构造方法。\n"
+        "4. 若有 BTCUSDT kline，当前优势边、顺/逆势成交、streak、q* 动态锚点和最终净仓锁定时点。\n\n"
+        "强推断：\n\n"
+        "1. 限价/挂单风格：由 same-price short-gap multi-fill 和被动成交代理支持，但不是 order-id 证明。\n"
+        "2. 双边库存结构：market-level both-side 与 batch-level both-side 分离。\n"
+        "3. q* 控制：扩大净风险必须由 `p_side - q*_after` 覆盖 buffer。\n"
+        "4. size 主体是离散 lot + rank multiplier + gate，不是 Kelly 连续函数。\n\n"
+        "未知：\n\n"
+        "1. 未成交单、撤单、真实 TTL、maker/taker 标记、队列位置、完整 L2 深度。\n"
+        "2. 真实外部 alpha、是否使用 Binance depth/perp/mark price/latency feed。\n"
+        "3. 账户总资金、跨市场组合限制、隐藏 hedge、多账户协同、手续费/返佣。\n"
+        "4. Polymarket 规则、tick、rate limit、post-only 语义和市场微结构变化。\n\n"
+        "禁止外推：不要把 ex-post winner 直接写成 live alpha；不要把 median cost 写成固定 cap；"
+        "不要把离散 lot 写成 Kelly；不要把缺 kline/orderbook 的报告拿去 live 下单。"
     )
 
     lines.append("\n## Auditor Readiness Checklist\n")
@@ -2226,6 +2978,10 @@ def generate_report(
         "roi": safe_div(total_pnl, resolved_cost),
         "primary_config": config,
         "data_audit": audit,
+        "interval_modes": interval_mode_rows,
+        "advantage_coverage": advantage_coverage,
+        "qstar_anchor_rows": qstar_anchor_rows[:20],
+        "final_net_lock_rows": final_lock_rows,
     }
     return report_path, summary
 
@@ -2284,6 +3040,12 @@ def main() -> int:
     price_rows = price_band_summary(orders)
     phase_rows = phase_summary(trades)
     sequence_rows = sequence_summary(orders)
+    qstar_anchor_rows = qstar_anchor_summary(market_rows, orders)
+    final_lock_rows = final_net_lock_summary(market_rows, orders)
+    advantage_rows = advantage_summary(trades)
+    advantage_streak_rows = advantage_streak_summary(orders)
+    size_diagnostic_rows = size_price_diagnostic(orders)
+    interval_mode_rows = interval_mode_summary(interval_rows, lifecycle_rows)
 
     write_csv(out_dir / "interval_summary.csv", interval_rows)
     write_csv(out_dir / "market_summary.csv", market_rows)
@@ -2293,6 +3055,12 @@ def main() -> int:
     write_csv(out_dir / "price_band_summary.csv", price_rows)
     write_csv(out_dir / "phase_summary.csv", phase_rows)
     write_csv(out_dir / "sequence_summary.csv", sequence_rows)
+    write_csv(out_dir / "qstar_anchor_summary.csv", qstar_anchor_rows)
+    write_csv(out_dir / "final_net_lock_summary.csv", final_lock_rows)
+    write_csv(out_dir / "advantage_relation_summary.csv", advantage_rows)
+    write_csv(out_dir / "advantage_streak_summary.csv", advantage_streak_rows)
+    write_csv(out_dir / "size_price_diagnostic.csv", size_diagnostic_rows)
+    write_csv(out_dir / "interval_mode_summary.csv", interval_mode_rows)
 
     report_path, summary = generate_report(
         out_dir=out_dir,
@@ -2310,6 +3078,12 @@ def main() -> int:
         price_rows=price_rows,
         phase_rows=phase_rows,
         sequence_rows=sequence_rows,
+        qstar_anchor_rows=qstar_anchor_rows,
+        final_lock_rows=final_lock_rows,
+        advantage_rows=advantage_rows,
+        advantage_streak_rows=advantage_streak_rows,
+        size_diagnostic_rows=size_diagnostic_rows,
+        interval_mode_rows=interval_mode_rows,
     )
     (out_dir / "analysis_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
