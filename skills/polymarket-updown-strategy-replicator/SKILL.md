@@ -1,15 +1,15 @@
 ---
 name: polymarket-updown-strategy-replicator
-description: Analyze a Polymarket wallet or profile address and generate a pixel-level replication document for crypto Up/Down trading behavior. Use when a user gives a Polymarket address and asks to reverse engineer, reproduce, audit, or document its BTC/ETH/SOL/XRP/DOGE/BNB Up/Down strategy, especially with Chinese prompts such as 地址策略复刻, 像素级复刻, 交易历史分析, PBot 类策略反推, 最近一个月默认分析.
+description: Analyze a Polymarket wallet or profile address and generate a pixel-level replication document for BTC Up/Down trading behavior only. Use when a user gives a Polymarket address and asks to reverse engineer, reproduce, audit, or document its BTC/Bitcoin Up/Down strategy, especially with Chinese prompts such as BTC updown 策略复刻, 地址策略复刻, 像素级复刻, 交易历史分析, PBot 类策略反推, 最近一个月默认分析.
 ---
 
-# Polymarket UpDown Strategy Replicator
+# Polymarket BTC UpDown Strategy Replicator
 
 ## Purpose
 
-Generate a source-backed, audit-ready strategy replication report from one Polymarket address. Default scope is the most recent 30 days of crypto Up/Down `TRADE` activity with settlement enrichment.
+Generate a source-backed, audit-ready strategy replication report from one Polymarket address. Default scope is the most recent 30 days of Polymarket BTC/Bitcoin Up/Down `TRADE` activity with settlement enrichment.
 
-This skill builds on `$polymarket-address-activity` for complete address exports, then applies a PBot-3 style forensic workflow: inferred limit orders, quote batches, ladder ranks, lifecycle timing, two-sided inventory, q* breakeven math, side streaks, budget and sizing distributions, and a concrete implementation handoff.
+This skill builds on `$polymarket-address-activity` for complete address exports and settlement labels, then uses `$binance-spot-kline-history` for BTCUSDT kline context. It applies a PBot-3 style forensic workflow: inferred limit orders, quote batches, ladder ranks, lifecycle timing, two-sided inventory, q* breakeven math, side streaks, budget and sizing distributions, and a concrete implementation handoff.
 
 ## Quick Start
 
@@ -23,32 +23,36 @@ python3 /Users/hfer/temp/my-skills/skills/polymarket-updown-strategy-replicator/
   --export-workers 4 \
   --export-limit 500 \
   --max-settlement-markets 5000 \
+  --fetch-binance-klines \
   --out-dir strategy-replication-audits
 ```
 
 The script will:
 
 1. Find and call `polymarket-address-activity/scripts/export_polymarket_activity.py` in raw chunks, then settlement-enrich the merged file.
-2. Filter crypto Up/Down markets.
-3. Infer orders and quote batches from short same-price consecutive fills.
-4. Generate a Markdown replication report and machine-readable JSON summary.
+2. Fetch BTCUSDT klines through `skills/data/binance-spot-kline-history/scripts/fetch_binance_spot_klines.py` when `--fetch-binance-klines` is set, or load an existing `--binance-kline-csv`.
+3. Filter BTC/Bitcoin Up/Down markets only.
+4. Infer orders and quote batches from short same-price consecutive fills.
+5. Generate a Markdown replication report and machine-readable JSON summary.
 
 If an enriched activity CSV already exists, skip export:
 
 ```bash
 python3 /Users/hfer/temp/my-skills/skills/polymarket-updown-strategy-replicator/scripts/analyze_updown_strategy.py \
   --input /path/to/address_activity_with_settlements.csv \
+  --binance-kline-csv /path/to/BTCUSDT_1s.csv \
   --out-dir strategy-replication-audits
 ```
 
-If the CSV is a raw activity export without settlement fields, the analyzer will create an enriched copy first. For very large addresses, keep `--max-settlement-markets` capped and report the unresolved tail explicitly; use `--max-settlement-markets 0` only when full Gamma enrichment is practical.
+If the CSV is a raw activity export without settlement fields, the analyzer will create an enriched copy first. For very large addresses, keep `--max-settlement-markets` capped and report the unresolved tail explicitly; use `--max-settlement-markets 0` only when full Gamma enrichment is practical. Binance BTCUSDT 1s kline is used as a BTC-only cross-check / fallback for missing settlement labels and as the live-alpha data prerequisite; it does not replace Polymarket settlement labels when those labels are present.
 
 ## Required Workflow
 
-1. **Export or load trades.** Prefer the bundled analyzer with `--user`; it delegates export to `$polymarket-address-activity`. Use `--input` only when the CSV is already settlement-enriched.
-2. **Read the generated report.** Check the report path printed by the script. Do not answer from the JSON summary alone.
-3. **Audit the report.** Use `$strategy-replication-auditor` on the generated Markdown report. The target quality gate for this project is `>=80 / 100`.
-4. **Iterate if below 80.** Add missing exact defaults, worked examples, data-health caveats, or validation gates. Re-run quick validation after edits.
+1. **Export or load trades and settlement.** Prefer the bundled analyzer with `--user`; it delegates address activity to `$polymarket-address-activity`. Use `--input` only when the CSV is already settlement-enriched or when the analyzer is allowed to enrich it.
+2. **Fetch or load BTCUSDT kline.** Use `$binance-spot-kline-history` directly or pass `--fetch-binance-klines` / `--binance-kline-csv`. Use `1s` for settlement cross-checks and alpha timing.
+3. **Read the generated report.** Check the report path printed by the script. Do not answer from the JSON summary alone.
+4. **Audit the report.** Use `$strategy-replication-auditor` on the generated Markdown report. The target quality gate for this project is `>=80 / 100`.
+5. **Iterate if below 80.** Add missing exact defaults, worked examples, data-health caveats, or validation gates. Re-run quick validation after edits.
 
 ## Output Contract
 
@@ -57,11 +61,11 @@ The report must include these sections:
 - Strategy boundary, address, time window, and non-goals.
 - Data sources, schemas, timezone, filtering rules, and data-health counts.
 - Market mechanics, payoff, settlement, fee and order-type assumptions.
-- Observed performance by asset, interval, side, price band, and phase.
+- Observed performance by BTC interval, side, price band, and phase.
 - Inferred order lifecycle: start, stop, frequency, multi-fill order rate.
 - Batch and ladder structure: one-side versus both-side batches, rank sizes, price offsets.
 - Inventory and q*: formulas, final net correctness, qstar margin, net caps.
-- Direction and alpha inference: what can be inferred from fills, what requires underlying price path data, and the default model when kline/orderbook is available.
+- Direction and alpha inference: what can be inferred from fills, what requires BTCUSDT price path data, and the default model when kline/orderbook is available.
 - Deterministic replication config with concrete numbers derived from the wallet sample.
 - Execution rules, sizing rules, risk controls, backtest/shadow/live gates.
 - One worked market example from first order to final inventory.
@@ -72,8 +76,8 @@ The report must include these sections:
 - Treat trade rows as facts.
 - Treat inferred orders as proxies, not real order IDs.
 - If maker/taker flags, cancellations, unfilled orders, L2 depth, or queue position are missing, say so and narrow the claim.
-- If the wallet has too few resolved crypto Up/Down markets, produce a partial report and state the minimum additional data needed.
-- Do not infer a live alpha source from settlement labels alone. Use settlement labels only as ex-post validation unless underlying kline/orderbook was joined.
+- If the wallet has too few resolved BTC Up/Down markets, produce a partial report and state the minimum additional data needed.
+- Do not infer a live alpha source from settlement labels alone. Use settlement labels only as ex-post validation unless BTCUSDT kline/orderbook was joined.
 
 ## References
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze a Polymarket wallet's crypto Up/Down trades and write a replication report."""
+"""Analyze a Polymarket wallet's BTC Up/Down trades and write a replication report."""
 
 from __future__ import annotations
 
@@ -26,11 +26,6 @@ from zoneinfo import ZoneInfo
 
 ASSET_ALIASES = {
     "btc": ("btc", "bitcoin"),
-    "eth": ("eth", "ethereum"),
-    "sol": ("sol", "solana"),
-    "xrp": ("xrp", "ripple"),
-    "doge": ("doge", "dogecoin"),
-    "bnb": ("bnb", "binance"),
 }
 INTERVAL_SECONDS = {
     "5m": 300,
@@ -193,11 +188,14 @@ def parse_args() -> argparse.Namespace:
         "--max-settlement-markets",
         type=int,
         default=5000,
-        help="Maximum unique market slugs to enrich through Gamma, ranked by traded cost. Use 0 for all. Default 5000.",
+        help="Maximum unique BTC market slugs to enrich through Gamma, ranked by traded cost. Use 0 for all. Default 5000.",
     )
-    parser.add_argument("--btc-kline-database-url", default="", help="Optional DB URL with BTCUSDT 1s kline for local settlement.")
-    parser.add_argument("--btc-kline-table", default="public.kline")
-    parser.add_argument("--disable-db-btc-settlement", action="store_true")
+    parser.add_argument("--binance-kline-script", default="", help="Path to fetch_binance_spot_klines.py.")
+    parser.add_argument("--binance-kline-csv", default="", help="Existing BTCUSDT kline CSV from binance-spot-kline-history.")
+    parser.add_argument("--fetch-binance-klines", action="store_true", help="Fetch BTCUSDT klines for the activity window before enrichment.")
+    parser.add_argument("--binance-kline-interval", default="1s", help="Binance kline interval. Default 1s.")
+    parser.add_argument("--binance-kline-cache-dir", default="", help="Optional cache directory passed to the Binance kline fetcher.")
+    parser.add_argument("--binance-max-api-pages", type=int, default=0, help="Optional --max-api-pages passed to the Binance kline fetcher.")
     parser.add_argument("--single-export", action="store_true", help="Disable external chunking and call exporter once.")
     parser.add_argument("--order-gap-sec", type=int, default=DEFAULT_ORDER_GAP_SEC)
     parser.add_argument("--batch-gap-sec", type=int, default=DEFAULT_BATCH_GAP_SEC)
@@ -360,7 +358,7 @@ def infer_asset_and_interval(slug: str, title: str) -> tuple[str, str]:
     return asset, interval
 
 
-def is_crypto_updown(slug: str, title: str) -> bool:
+def is_btc_updown(slug: str, title: str) -> bool:
     target = f"{slug} {title}".lower()
     has_asset = any(alias in target for aliases in ASSET_ALIASES.values() for alias in aliases)
     has_updown = (
@@ -406,6 +404,24 @@ def resolve_export_script(provided: str | None) -> Path:
     raise SystemExit("Could not find export_polymarket_activity.py; pass --export-script or --input.")
 
 
+def resolve_binance_kline_script(provided: str | None) -> Path | None:
+    candidates: list[Path] = []
+    if provided:
+        candidates.append(Path(provided).expanduser())
+    here = Path(__file__).resolve()
+    candidates.extend(
+        [
+            here.parents[2] / "data/binance-spot-kline-history/scripts/fetch_binance_spot_klines.py",
+            Path("/Users/hfer/temp/my-skills/skills/data/binance-spot-kline-history/scripts/fetch_binance_spot_klines.py"),
+            Path.home() / ".codex/skills/binance-spot-kline-history/scripts/fetch_binance_spot_klines.py",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def parse_local_or_epoch(value: str, timezone: str) -> int:
     if re.fullmatch(r"\d+(\.\d+)?", str(value).strip()):
         return int(float(value))
@@ -443,20 +459,6 @@ def load_env_file(path_text: str) -> None:
             continue
         key, value = stripped.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-def normalize_db_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        return "postgresql+psycopg2://" + url[len("postgres://") :]
-    if url.startswith("postgresql://"):
-        return "postgresql+psycopg2://" + url[len("postgresql://") :]
-    return url
-
-
-def safe_sql_table(value: str) -> str:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", str(value)):
-        raise ValueError(f"Unsafe SQL table name: {value!r}")
-    return str(value)
 
 
 def run_exporter(
@@ -665,7 +667,7 @@ def parse_btc_updown_window(row: dict[str, Any]) -> tuple[int, int] | None:
     text = f"{slug} {title}".lower()
     if "btc" not in text and "bitcoin" not in text:
         return None
-    if not is_crypto_updown(slug, title):
+    if not is_btc_updown(slug, title):
         return None
     match = re.search(r"btc-updown-(5m|15m|1h|4h)-(\d{10})", slug)
     if match:
@@ -739,43 +741,111 @@ def parse_title_updown_window(row: dict[str, Any]) -> tuple[int, int] | None:
     return start, start + 3600
 
 
-def load_btc_kline_prices(db_url: str, table: str, timestamps: list[int]) -> dict[int, float]:
-    if not db_url or not timestamps:
-        return {}
-    sys.path.insert(0, "/tmp/pbot3_pgdeps")
-    try:
-        from sqlalchemy import create_engine, text
-    except Exception as exc:  # noqa: BLE001 - optional dependency.
-        print(f"Skipping DB BTC settlement because SQLAlchemy is unavailable: {exc!r}", flush=True)
-        return {}
-    safe_table = safe_sql_table(table)
-    engine = create_engine(normalize_db_url(db_url), connect_args={"connect_timeout": 10})
-    prices: dict[int, float] = {}
-    try:
-        unique_ts = sorted(set(timestamps))
-        for idx in range(0, len(unique_ts), 5000):
-            chunk = unique_ts[idx : idx + 5000]
-            datetimes = [dt.datetime.fromtimestamp(ts, dt.timezone.utc) for ts in chunk]
-            sql = f"""
-            SELECT open_time, close::float AS close
-            FROM {safe_table}
-            WHERE symbol = 'BTCUSDT'
-              AND time_period = '1s'
-              AND open_time = ANY(:times)
-            """
-            with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"times": datetimes}).fetchall()
-            for open_time, close in rows:
-                parsed = open_time
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=dt.timezone.utc)
-                prices[int(parsed.timestamp())] = float(close)
-    finally:
-        engine.dispose()
-    return prices
+def utc_arg(ts: int) -> str:
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def db_settle_btc_markets(rows: list[dict[str, Any]], db_url: str, table: str) -> dict[str, dict[str, Any]]:
+def btc_kline_window(rows: list[dict[str, Any]]) -> tuple[int, int] | None:
+    starts: list[int] = []
+    ends: list[int] = []
+    fallback_timestamps: list[int] = []
+    for row in rows:
+        timestamp = clean_int(row.get("timestamp")) or parse_datetime_to_ts(row.get("datetimeUtc"))
+        if timestamp is not None:
+            fallback_timestamps.append(timestamp)
+        parsed = parse_btc_updown_window(row)
+        if parsed:
+            start, end = parsed
+            starts.append(start)
+            ends.append(end)
+    if starts and ends:
+        return max(0, min(starts) - 60), max(ends) + 60
+    if fallback_timestamps:
+        return max(0, min(fallback_timestamps) - 3600), max(fallback_timestamps) + 3600
+    return None
+
+
+def prepare_binance_kline_csv(activity_csv: Path, args: argparse.Namespace, out_dir: Path) -> Path | None:
+    if args.binance_kline_csv:
+        path = Path(args.binance_kline_csv).expanduser().resolve()
+        if not path.exists():
+            raise SystemExit(f"--binance-kline-csv does not exist: {path}")
+        return path
+    if not args.fetch_binance_klines:
+        return None
+    script = resolve_binance_kline_script(args.binance_kline_script)
+    if script is None:
+        raise SystemExit("Could not find fetch_binance_spot_klines.py; pass --binance-kline-script or --binance-kline-csv.")
+    with activity_csv.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    window = btc_kline_window(rows)
+    if window is None:
+        print("Skipping Binance kline fetch because no BTC Up/Down window was found.", flush=True)
+        return None
+    start, end = window
+    kline_dir = out_dir / "binance_klines"
+    kline_dir.mkdir(parents=True, exist_ok=True)
+    output = kline_dir / (
+        f"BTCUSDT_{args.binance_kline_interval}_{dt.datetime.fromtimestamp(start, dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+        f"{dt.datetime.fromtimestamp(end, dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.csv"
+    )
+    cmd = [
+        sys.executable,
+        str(script),
+        "--symbol",
+        "BTCUSDT",
+        "--interval",
+        args.binance_kline_interval,
+        "--start",
+        utc_arg(start),
+        "--end",
+        utc_arg(end),
+        "--out",
+        str(output),
+    ]
+    if args.binance_kline_cache_dir:
+        cmd.extend(["--cache-dir", str(Path(args.binance_kline_cache_dir).expanduser())])
+    if args.binance_max_api_pages:
+        cmd.extend(["--max-api-pages", str(args.binance_max_api_pages)])
+    print(f"Fetching Binance BTCUSDT {args.binance_kline_interval} klines: {utc_arg(start)} -> {utc_arg(end)}", flush=True)
+    run = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    log_dir = out_dir / "_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "binance_kline_fetch.stdout.txt").write_text(run.stdout, encoding="utf-8")
+    (log_dir / "binance_kline_fetch.stderr.txt").write_text(run.stderr, encoding="utf-8")
+    if run.returncode != 0:
+        sys.stderr.write(run.stdout)
+        sys.stderr.write(run.stderr)
+        raise SystemExit(f"Binance kline fetch failed with exit {run.returncode}")
+    return output
+
+
+def load_binance_1s_candles(kline_csv: Path, timestamps: list[int]) -> dict[int, dict[str, float]]:
+    if not kline_csv or not timestamps:
+        return {}
+    wanted = set(timestamps)
+    candles: dict[int, dict[str, float]] = {}
+    with kline_csv.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            open_time = clean_int(row.get("open_time"))
+            if open_time is None:
+                continue
+            ts = open_time // 1000 if open_time > 10_000_000_000 else open_time
+            if ts not in wanted:
+                continue
+            candles[ts] = {
+                "open": clean_float(row.get("open"), math.nan),
+                "close": clean_float(row.get("close"), math.nan),
+            }
+            if len(candles) >= len(wanted):
+                break
+    return candles
+
+
+def binance_settle_btc_markets(rows: list[dict[str, Any]], kline_csv: Path | None) -> dict[str, dict[str, Any]]:
+    if kline_csv is None:
+        return {}
     windows: dict[str, tuple[int, int]] = {}
     for row in rows:
         slug = row.get("eventSlug") or row.get("slug") or ""
@@ -790,13 +860,18 @@ def db_settle_btc_markets(rows: list[dict[str, Any]], db_url: str, table: str) -
     for start, end in windows.values():
         needed.append(start)
         needed.append(end - 1)
-    prices = load_btc_kline_prices(db_url, table, needed)
+    candles = load_binance_1s_candles(kline_csv, needed)
     settlements: dict[str, dict[str, Any]] = {}
     missing = 0
     for slug, (start, end) in windows.items():
-        open_price = prices.get(start)
-        close_price = prices.get(end - 1)
-        if open_price is None or close_price is None:
+        open_candle = candles.get(start)
+        close_candle = candles.get(end - 1)
+        if not open_candle or not close_candle:
+            missing += 1
+            continue
+        open_price = open_candle.get("open", math.nan)
+        close_price = close_candle.get("close", math.nan)
+        if not math.isfinite(open_price) or not math.isfinite(close_price):
             missing += 1
             continue
         if close_price > open_price:
@@ -809,7 +884,7 @@ def db_settle_btc_markets(rows: list[dict[str, Any]], db_url: str, table: str) -
             "eventSlug": slug,
             "gammaMarketId": "",
             "closed": True,
-            "settlementStatus": "RESOLVED_DB_BTC_KLINE",
+            "settlementStatus": "RESOLVED_BINANCE_BTC_KLINE",
             "winningOutcome": winning,
             "outcomes": json.dumps(["Up", "Down"]),
             "outcomePrices": json.dumps([1 if winning == "Up" else 0, 1 if winning == "Down" else 0]),
@@ -818,9 +893,10 @@ def db_settle_btc_markets(rows: list[dict[str, Any]], db_url: str, table: str) -
             "apiError": "",
             "btcOpen": open_price,
             "btcClose": close_price,
+            "klineCsv": str(kline_csv),
         }
     print(
-        f"DB BTC settlement resolved {len(settlements)}/{len(windows)} BTC Up/Down markets"
+        f"Binance BTCUSDT kline resolved {len(settlements)}/{len(windows)} BTC Up/Down markets"
         + (f"; missing kline for {missing}" if missing else ""),
         flush=True,
     )
@@ -832,19 +908,18 @@ def enrich_activity_csv(
     enriched_csv: Path,
     settlements_json: Path,
     max_settlement_markets: int = 0,
-    btc_kline_db_url: str = "",
-    btc_kline_table: str = "public.kline",
+    binance_kline_csv: Path | None = None,
 ) -> Path:
     with raw_csv.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         rows = list(reader)
         base_fields = list(reader.fieldnames or [])
-    db_settlements = db_settle_btc_markets(rows, btc_kline_db_url, btc_kline_table) if btc_kline_db_url else {}
+    binance_settlements = binance_settle_btc_markets(rows, binance_kline_csv)
     cost_by_slug: defaultdict[str, float] = defaultdict(float)
     for row in rows:
         slug = row.get("eventSlug") or row.get("slug") or ""
         title = row.get("title") or row.get("question") or row.get("name") or ""
-        if slug and is_crypto_updown(slug, title) and slug not in db_settlements:
+        if slug and is_btc_updown(slug, title):
             cost_by_slug[slug] += clean_float(row.get("usdcSize"), 0.0)
     all_slugs = sorted(cost_by_slug)
     if max_settlement_markets and max_settlement_markets > 0 and len(all_slugs) > max_settlement_markets:
@@ -859,11 +934,15 @@ def enrich_activity_csv(
     else:
         slugs = all_slugs
         skipped_slugs = set()
-    settlements = dict(db_settlements)
-    settlements.update(fetch_settlements_once(slugs))
+    settlements = fetch_settlements_once(slugs)
+    for slug, kline_settlement in binance_settlements.items():
+        current_status = str(settlements.get(slug, {}).get("settlementStatus", ""))
+        if slug not in settlements or current_status in {"", "OPEN", "FETCH_ERROR", "MISSING_SETTLEMENT", "SETTLEMENT_NOT_FETCHED"}:
+            settlements[slug] = kline_settlement
     settlement_payload = {
         "fetched_market_count": len(slugs),
-        "db_btc_market_count": len(db_settlements),
+        "binance_btc_market_count": len(binance_settlements),
+        "binance_kline_csv": str(binance_kline_csv or ""),
         "settled_market_count": len(settlements),
         "gamma_candidate_market_count": len(all_slugs),
         "skipped_market_count": len(skipped_slugs),
@@ -882,6 +961,9 @@ def enrich_activity_csv(
         "marketEndDate",
         "marketClosedTime",
         "marketOutcomePrices",
+        "btcOpen",
+        "btcClose",
+        "settlementKlineCsv",
     ]
     fieldnames = list(base_fields)
     for field in extra_fields:
@@ -921,6 +1003,9 @@ def enrich_activity_csv(
                 "marketEndDate": settlement.get("endDate", ""),
                 "marketClosedTime": settlement.get("closedTime", ""),
                 "marketOutcomePrices": settlement.get("outcomePrices", ""),
+                "btcOpen": settlement.get("btcOpen", ""),
+                "btcClose": settlement.get("btcClose", ""),
+                "settlementKlineCsv": settlement.get("klineCsv", ""),
             }
         )
         enriched_rows.append(enriched)
@@ -929,6 +1014,71 @@ def enrich_activity_csv(
         writer.writeheader()
         writer.writerows(enriched_rows)
     return enriched_csv
+
+
+def attach_binance_kline_fields(input_csv: Path, output_csv: Path, binance_kline_csv: Path | None) -> Path:
+    if binance_kline_csv is None:
+        return input_csv
+    with input_csv.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        rows = list(reader)
+        base_fields = list(reader.fieldnames or [])
+    kline_settlements = binance_settle_btc_markets(rows, binance_kline_csv)
+    if not kline_settlements:
+        return input_csv
+    extra_fields = [
+        "settlementStatus",
+        "winningOutcome",
+        "activityOutcomeResult",
+        "activityPayoutUSDC",
+        "activityPnLUSDC",
+        "marketEndDate",
+        "btcOpen",
+        "btcClose",
+        "settlementKlineCsv",
+    ]
+    fieldnames = list(base_fields)
+    for field in extra_fields:
+        if field not in fieldnames:
+            fieldnames.append(field)
+    output_rows: list[dict[str, Any]] = []
+    for row in rows:
+        slug = row.get("eventSlug") or row.get("slug") or ""
+        kline_settlement = kline_settlements.get(slug)
+        if kline_settlement:
+            row = dict(row)
+            if not row.get("btcOpen"):
+                row["btcOpen"] = kline_settlement.get("btcOpen", "")
+            if not row.get("btcClose"):
+                row["btcClose"] = kline_settlement.get("btcClose", "")
+            if not row.get("settlementKlineCsv"):
+                row["settlementKlineCsv"] = kline_settlement.get("klineCsv", "")
+            status = str(row.get("settlementStatus") or "")
+            if status in {"", "OPEN", "FETCH_ERROR", "MISSING_SETTLEMENT", "SETTLEMENT_NOT_FETCHED"}:
+                row["settlementStatus"] = kline_settlement.get("settlementStatus", status)
+                row["winningOutcome"] = kline_settlement.get("winningOutcome", row.get("winningOutcome", ""))
+                row["marketEndDate"] = kline_settlement.get("endDate", row.get("marketEndDate", ""))
+                outcome = row.get("outcome")
+                winning = [value for value in str(row.get("winningOutcome") or "").split("|") if value]
+                result = "WIN" if outcome in winning else "LOSS"
+                current_result = str(row.get("activityOutcomeResult") or row.get("tradeOutcomeResult") or "")
+                if current_result in {"", "OPEN", "UNKNOWN"}:
+                    row["activityOutcomeResult"] = result
+                if str(row.get("side", "")).upper() == "BUY":
+                    size = clean_float(row.get("size"), 0.0)
+                    cost = clean_float(row.get("usdcSize"), 0.0)
+                    payout_value = size if result == "WIN" else 0.0
+                    if not row.get("activityPayoutUSDC"):
+                        row["activityPayoutUSDC"] = f"{payout_value:.12f}"
+                    if not row.get("activityPnLUSDC"):
+                        row["activityPnLUSDC"] = f"{(payout_value - cost):.12f}"
+        output_rows.append(row)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(output_rows)
+    return output_csv
 
 
 def export_activity(args: argparse.Namespace, out_dir: Path, label: str) -> Path:
@@ -944,7 +1094,8 @@ def export_activity(args: argparse.Namespace, out_dir: Path, label: str) -> Path
         result = run_exporter(script, args, user, raw_dir, label, start, end, settlements=True)
         if result is None:
             raise SystemExit(f"Activity export succeeded but no *_with_settlements.csv was found in {raw_dir}")
-        return result
+        binance_kline_csv = prepare_binance_kline_csv(result, args, out_dir)
+        return attach_binance_kline_fields(result, out_dir / f"{label}_{user}_single_with_binance_kline.csv", binance_kline_csv)
 
     chunk_seconds = max(60, int(float(args.export_chunk_hours) * 3600))
     chunk_specs: list[tuple[int, int, str]] = []
@@ -990,13 +1141,13 @@ def export_activity(args: argparse.Namespace, out_dir: Path, label: str) -> Path
     merged_raw = out_dir / f"{label}_{user}_merged_activity.csv"
     merge_activity_csvs(chunk_paths, merged_raw)
     merged_enriched = out_dir / f"{label}_{user}_merged_with_settlements.csv"
+    binance_kline_csv = prepare_binance_kline_csv(merged_raw, args, out_dir)
     return enrich_activity_csv(
         merged_raw,
         merged_enriched,
         out_dir / f"{label}_{user}_market_settlements.json",
         int(args.max_settlement_markets),
-        "" if args.disable_db_btc_settlement else (args.btc_kline_database_url or os.environ.get("OVH2_DATABASE_URL", "")),
-        args.btc_kline_table,
+        binance_kline_csv,
     )
 
 
@@ -1020,7 +1171,7 @@ def load_trades(path: Path, price_decimals: int) -> tuple[list[Trade], dict[str,
             continue
         slug = row.get("eventSlug") or row.get("slug") or ""
         title = row.get("title") or row.get("question") or row.get("name") or ""
-        if not is_crypto_updown(slug, title):
+        if not is_btc_updown(slug, title):
             continue
         asset, interval = infer_asset_and_interval(slug, title)
         market_start = slug_market_start(slug)
@@ -1074,7 +1225,7 @@ def load_trades(path: Path, price_decimals: int) -> tuple[list[Trade], dict[str,
     audit = {
         "input_csv": str(path),
         "input_rows": len(rows),
-        "crypto_updown_trade_rows": len(trades),
+        "btc_updown_trade_rows": len(trades),
         "markets": len({t.slug for t in trades}),
         "assets": dict(Counter(t.asset for t in trades)),
         "intervals": dict(Counter(t.interval for t in trades)),
@@ -1612,19 +1763,19 @@ def generate_report(
     min_data_warning = ""
     if len(market_rows) < args.min_report_markets:
         min_data_warning = (
-            f"\n> 数据不足提示：样本只有 `{len(market_rows)}` 个 crypto Up/Down 市场，低于默认 `{args.min_report_markets}`。"
+            f"\n> 数据不足提示：样本只有 `{len(market_rows)}` 个 BTC Up/Down 市场，低于默认 `{args.min_report_markets}`。"
             "本报告仍给出复刻框架，但 live 策略不得上线，只能作为研究草案。\n"
         )
 
     lines: list[str] = []
-    lines.append("# Polymarket Crypto Up/Down 地址策略像素级复刻报告\n")
+    lines.append("# Polymarket BTC Up/Down 地址策略像素级复刻报告\n")
     lines.append("## 技术摘要\n")
     lines.append(
         f"- 地址：`{args.user or infer_user_from_rows(trades) or 'input-csv'}`\n"
         f"- 输入：`{input_csv}`\n"
         f"- 生成时间 UTC：`{generated}`\n"
         f"- 默认/实际窗口：`{args.days:g}` 天；若使用 `--input`，窗口以 CSV 为准。\n"
-        f"- crypto Up/Down 成交行：`{len(trades):,}`；市场：`{len(market_rows):,}`；inferred orders：`{len(orders):,}`。\n"
+        f"- BTC Up/Down 成交行：`{len(trades):,}`；市场：`{len(market_rows):,}`；inferred orders：`{len(orders):,}`。\n"
         f"- 总成本：`{fmt_num(total_cost)}`；已结算/已拉取成本：`{fmt_num(resolved_cost)}`；"
         f"已标记 PnL：`{fmt_num(total_pnl)}`；resolved ROI：`{fmt_pct(safe_div(total_pnl, resolved_cost))}`。\n"
         f"- BUY-only：`{buy_only}`；market both-side rate：`{fmt_pct(both_sides_rate)}`；multi-fill order rate：`{fmt_pct(multi_fill_order_rate)}`；final net correct：`{fmt_pct(net_correct)}`。"
@@ -1639,7 +1790,8 @@ def generate_report(
     lines.append("\n## 一页机制图\n")
     lines.append(
         "```text\n"
-        "address trades -> crypto Up/Down filter -> settlement labels\n"
+        "address trades -> BTC Up/Down filter -> Polymarket settlement labels\n"
+        "       -> optional BTCUSDT 1s kline join from binance-spot-kline-history\n"
         "       -> inferred orders by same market/outcome/side/price within 5s\n"
         "       -> quote batches by market time gap within 5s\n"
         "       -> ladder ranks, lifecycle timing, budget, size lots\n"
@@ -1651,9 +1803,10 @@ def generate_report(
     lines.append("## 数据来源与过滤规则\n")
     lines.append(
         f"- 原始 CSV 行数：`{audit['input_rows']:,}`。\n"
-        f"- crypto Up/Down 过滤后行数：`{audit['crypto_updown_trade_rows']:,}`。\n"
-        f"- 过滤逻辑：slug/title 中必须出现 crypto asset 别名，并包含 `updown`、`up-or-down`、`up or down` 或等价描述。\n"
+        f"- BTC Up/Down 过滤后行数：`{audit['btc_updown_trade_rows']:,}`。\n"
+        f"- 过滤逻辑：slug/title 中必须出现 `btc` 或 `bitcoin`，并包含 `updown`、`up-or-down`、`up or down` 或等价描述。\n"
         f"- settlement 字段优先级：`activityOutcomeResult` / `tradeOutcomeResult`；PnL 字段优先级：`activityPnLUSDC` / `tradePnLUSDC`。\n"
+        f"- settlement 结果优先来自 `polymarket-address-activity` / Gamma；若启用 Binance kline，BTCUSDT 1s 只用于补全未拉到或仍 open/missing 的 BTC 市场，并在 CSV 中写入 `btcOpen` / `btcClose` / `settlementKlineCsv`。\n"
         f"- 时间字段：优先 `timestamp` Unix 秒；显示统一使用 UTC。\n"
         f"- market_start：优先从 slug 末尾 10 位 Unix 秒解析；否则使用 market end 字段进行部分生命周期分析。\n"
         f"- inferred order：同 market + outcome + side + rounded price，连续 fill gap <= `{args.order_gap_sec}s`。\n"
@@ -1675,7 +1828,7 @@ def generate_report(
     lines.append(
         "- Up/Down 市场是二元 payoff：买中结算边的 share 最终按 `1` 兑付，买错边按 `0` 兑付。\n"
         "- BUY 行的历史 PnL 使用 settlement enrichment 字段；SELL 行不强行按同一公式解释，报告会保留 side_counts。\n"
-        "- 费用：若 CSV PnL 已含费用则以 CSV 为准；若 live 复刻需要估算，默认使用 `fee_rate = 0.07 * min(price, 1-price)` 的保守 crypto fee 近似，并在回放中做 `0x/0.5x/1x/2x` 敏感性。\n"
+        "- 费用：若 CSV PnL 已含费用则以 CSV 为准；若 live 复刻需要估算，默认使用 `fee_rate = 0.07 * min(price, 1-price)` 的保守 Polymarket 费用近似，并在回放中做 `0x/0.5x/1x/2x` 敏感性。\n"
         "- maker/taker：CSV 没有逐笔 maker/taker 标记。若 multi-fill same-price 与低价阶梯明显，默认实现用 `post-only` 限价；若样本显示高价单笔或 SELL 多，应单独降级为未知执行风格。\n"
     )
 
@@ -1859,7 +2012,7 @@ def generate_report(
     lines.append("\n## alpha 与方向来源\n")
     lines.append(
         "仅凭地址成交 CSV 不能直接恢复 live alpha。可确定的是最终净仓与结算边之间的关系，以及订单在生命周期中的偏向。"
-        "若要从本报告上线策略，必须补底层 1s kline/orderbook 并训练或校准 fair value 模型。\n\n"
+        "若要从本报告上线策略，必须使用 BTCUSDT 1s kline/orderbook 训练或校准 fair value 模型。\n\n"
         "默认 live alpha 模型规格：\n\n"
         "```yaml\n"
         "label: market_winning_outcome_up\n"
@@ -1868,7 +2021,7 @@ def generate_report(
         "sample_frequency: every_1s_or_5s_while_market_open\n"
         "model: logistic_regression_or_calibrated_gradient_boosting\n"
         "features:\n"
-        "  - asset_one_hot\n"
+        "  - btc_market_family\n"
         "  - interval\n"
         "  - elapsed_frac\n"
         "  - seconds_remaining_sqrt\n"
@@ -1882,7 +2035,7 @@ def generate_report(
         "  - realized_vol_30s_bps\n"
         "  - range_so_far_bps\n"
         "  - clean_book_implied_probability\n"
-        "fallback_without_kline: research_report_only_no_live_orders\n"
+        "fallback_without_btcusdt_kline: research_report_only_no_live_orders\n"
         "```\n"
     )
 
@@ -1931,7 +2084,7 @@ def generate_report(
     lines.append(
         "```text\n"
         "on each market tick:\n"
-        "  if market asset/interval not in enabled config: no-op\n"
+        "  if market is not BTC Up/Down or interval not in enabled config: no-op\n"
         "  if data lag > 2s or book stale > 500ms: cancel open quotes and pause\n"
         "  if elapsed < start_quote_after_open_sec: no-op\n"
         "  if seconds_to_close < stop_new_orders_before_close_sec: cancel or do not add risk\n"
@@ -2049,7 +2202,7 @@ def generate_report(
     lines.append("\n## Auditor Readiness Checklist\n")
     lines.append(
         "- [x] exact address/window/input path\n"
-        "- [x] crypto Up/Down filter and data fields\n"
+        "- [x] BTC Up/Down filter and data fields\n"
         "- [x] inferred order and batch construction\n"
         "- [x] lifecycle, ladder, size, budget, inventory, q* sections\n"
         "- [x] alpha boundary and default live model spec\n"
@@ -2098,13 +2251,20 @@ def main() -> int:
         input_csv = Path(args.input).expanduser().resolve()
         if not has_settlement_columns(input_csv):
             enriched_name = input_csv.stem + "_with_capped_settlements.csv"
+            binance_kline_csv = prepare_binance_kline_csv(input_csv, args, out_dir)
             input_csv = enrich_activity_csv(
                 input_csv,
                 out_dir / enriched_name,
                 out_dir / (Path(enriched_name).stem + "_market_settlements.json"),
                 int(args.max_settlement_markets),
-                "" if args.disable_db_btc_settlement else (args.btc_kline_database_url or os.environ.get("OVH2_DATABASE_URL", "")),
-                args.btc_kline_table,
+                binance_kline_csv,
+            )
+        else:
+            binance_kline_csv = prepare_binance_kline_csv(input_csv, args, out_dir)
+            input_csv = attach_binance_kline_fields(
+                input_csv,
+                out_dir / f"{input_csv.stem}_with_binance_kline.csv",
+                binance_kline_csv,
             )
     elif args.skip_export:
         raise SystemExit("--skip-export requires --input.")
@@ -2113,7 +2273,7 @@ def main() -> int:
 
     trades, audit = load_trades(input_csv, args.price_decimals)
     if not trades:
-        raise SystemExit("No crypto Up/Down trades found after filtering.")
+        raise SystemExit("No BTC Up/Down trades found after filtering.")
 
     orders = infer_orders(trades, args.order_gap_sec)
     interval_rows = summarize_intervals(trades)

@@ -1,6 +1,6 @@
 interface:
-  display_name: "Polymarket UpDown Strategy Replicator"
-  short_description: "Wallet-to-strategy replication reports"
-  default_prompt: "Use $polymarket-updown-strategy-replicator to analyze 0x... over the last 30 days and generate a pixel-level crypto Up/Down strategy replication report."
+  display_name: "Polymarket BTC UpDown Strategy Replicator"
+  short_description: "BTC UpDown wallet-to-strategy replication reports"
+  default_prompt: "Use $polymarket-updown-strategy-replicator to analyze 0x... over the last 30 days and generate a pixel-level BTC Up/Down strategy replication report with BTCUSDT kline context."
 policy:
   allow_implicit_invocation: true

@@ -7,7 +7,7 @@ The generated report should target `>=80 / 100` under `$strategy-replication-aud
 Reproducibility boundary:
 
 - Exact address, date window, generated timestamp, input CSV path, strategy version.
-- Included assets and intervals.
+- Included BTC intervals.
 - Explicit non-goals and unknowns.
 
 Market mechanics:
@@ -16,12 +16,12 @@ Market mechanics:
 
 Data specification:
 
-- Source fields, timezone, crypto Up/Down filter, inferred-order gap, price rounding, missing data handling.
+- Source fields, timezone, BTC Up/Down filter, inferred-order gap, price rounding, missing data handling.
 
 Alpha model:
 
 - Distinguish observed ex-post edge from live alpha.
-- Provide default live alpha model when kline/orderbook exists: features, labels, train window, calibration, fallback.
+- Provide default live alpha model when BTCUSDT kline/orderbook exists: features, labels, train window, calibration, fallback.
 
 Decision rules:
 
