@@ -1,0 +1,4 @@
+interface:
+  display_name: "Strategy Replication Auditor"
+  short_description: "Audit strategy replication docs"
+  default_prompt: "Use $strategy-replication-auditor to score this pixel-level strategy replication document against independent-team reproducibility."
