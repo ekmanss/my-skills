@@ -1,0 +1,4 @@
+interface:
+  display_name: "Production Site Replica"
+  short_description: "Rebuild high-fidelity sites as production apps"
+  default_prompt: "Use $production-site-replica to rebuild this website URL as a local production-grade frontend demo."
