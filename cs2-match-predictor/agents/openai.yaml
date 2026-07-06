@@ -1,0 +1,4 @@
+interface:
+  display_name: "CS2 Match Predictor"
+  short_description: "CS2 live match prediction workflow"
+  default_prompt: "Use $cs2-match-predictor to analyze a live CS2 match from current score, map, sides, form, and matchup data."
