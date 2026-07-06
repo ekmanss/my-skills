@@ -9,16 +9,19 @@ description: CS2 esports match analysis and prediction workflow for live map, fu
 
 Use this skill to produce source-backed CS2 predictions for live maps, completed-map follow-ups, and full BO1/BO3/BO5 series reads. Treat every percentage as a calibrated judgment, not a betting guarantee.
 
+For in-progress public matches, try 5EPlay first. Start from `https://event.5eplay.com/csgo/matches` to locate the current teams and match id, then fetch the structured 5EPlay data endpoints before using HLTV, BO3.gg, or other sites as cross-checks.
+
 Read `references/data-sources.md` when choosing sources, explaining source quality, or researching a new match/provider.
 
 Use `scripts/round_model.py` whenever the user asks for live map win rates or Over/Under round-line probabilities from a current score.
 
 ## Core Workflow
 
-1. Verify the live context first. For active or recently completed matches, browse or fetch current sources before answering. If the user's score is ahead of public sources, use the user's score and explicitly say that public sources lag.
+1. Verify the live context first. For active or recently completed matches, browse or fetch current sources before answering. For live CS2, first try `https://event.5eplay.com/csgo/matches` because its match list exposes current teams and links such as `https://event.5eplay.com/csgo/matches/csgo_mc_2395587`. If the user's score is ahead of public sources, use the user's score and explicitly say that public sources lag.
 2. Resolve the match:
    - Identify teams, aliases, event, BO format, series score, current map, map order, map pick, veto, current score, half/stage, and CT/T sides.
-   - For 5EPlay match URLs, prefer its structured endpoints:
+   - When only team names or a user-provided live score are available, search the 5EPlay match list first for those teams. If found, extract the `csgo_mc_*` match id from the URL and treat that match as the live source of record.
+   - For 5EPlay match URLs or match ids, prefer its structured endpoints:
      - `https://esports-data.5eplaycdn.com/v1/api/csgo/matches/<match_id>/data`
      - `https://esports-data.5eplaycdn.com/v1/api/csgo/matches/<match_id>/analysis_v1`
      - `https://esports-data.5eplaycdn.com/v1/api/csgo/match/<match_id>/event/log?update_version=0&limit=1000`
@@ -48,6 +51,7 @@ Use `scripts/round_model.py` whenever the user asks for live map win rates or Ov
 Do not give a final probability until these items have been attempted:
 
 - Live score, map, sides, series score, and refresh time.
+- For in-progress matches, attempted 5EPlay match-list discovery or confirmed why 5EPlay did not cover the match.
 - Map veto/order and map ownership.
 - Recent form and current roster.
 - Map pool and relevant map stats.
@@ -78,6 +82,7 @@ Keep map probability and series probability separate. A team can be favored on t
 ## Live Update Rules
 
 - If the user says "Imperial 1 - 3 Alka" or similar, parse the first named team as Team A unless the user specifies otherwise.
+- For live matches without a URL, check `https://event.5eplay.com/csgo/matches` first. If the teams are listed there, use the 5EPlay match URL and structured JSON as the primary live feed.
 - If public sources conflict with the user-provided score, use the freshest plausible source and say which one you used.
 - If event logs are ahead of the main scoreboard, state that logs are ahead and use logs for the latest score only after side/team mapping is clear.
 - Refresh sources when a new map starts, a map ends, or the current score differs from the previous answer.

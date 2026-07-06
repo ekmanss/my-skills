@@ -62,14 +62,23 @@ Useful URLs:
 
 ### 5EPlay Event Data
 
-Use first when the user provides a 5EPlay match URL. It exposes useful structured JSON for match state, veto, live score, player stats, and event logs.
+Primary public source for in-progress CS2 matches when covered. Use it first when the user provides a 5EPlay match URL, and also use it first when the user only provides team names or a current live score. The public match list at `https://event.5eplay.com/csgo/matches` exposes current live teams and match links; use it to locate the relevant `csgo_mc_*` match id before fetching structured JSON.
 
 Endpoints:
+- Match list: `https://event.5eplay.com/csgo/matches`
 - Match page: `https://event.5eplay.com/csgo/matches/<match_id>`
 - Current data: `https://esports-data.5eplaycdn.com/v1/api/csgo/matches/<match_id>/data`
 - Analysis: `https://esports-data.5eplaycdn.com/v1/api/csgo/matches/<match_id>/analysis_v1`
 - Event log: `https://esports-data.5eplaycdn.com/v1/api/csgo/match/<match_id>/event/log?update_version=0&limit=1000`
 - Score tabs: `https://app.5eplay.com/api/score/match_score_tab?match_id=<match_id>&game_type=1`
+
+Live discovery workflow:
+1. Open or browse `https://event.5eplay.com/csgo/matches` and search the current teams, aliases, or tournament.
+2. Extract the match id from a link such as `https://event.5eplay.com/csgo/matches/csgo_mc_2395587`.
+3. Fetch `/data` first for live score, current map, sides, player stats, economy, veto, and series state.
+4. Fetch `/analysis_v1` for pre-match comparison, historical baselines, map pool, and player references.
+5. Fetch `/event/log` when the live score looks stale or the user reports a score one round ahead of `bouts_state`.
+6. Use the rendered match/list pages for discovery and sanity checks; use the structured endpoints as the analytic source of record.
 
 Fields to inspect:
 - `data.match.mc_info`: teams, format, event, planned start.
@@ -183,7 +192,7 @@ Useful URL:
 
 For public analysis:
 
-1. 5EPlay structured data when a 5E link is given.
+1. 5EPlay match list plus structured data for in-progress matches, especially when the teams appear on `https://event.5eplay.com/csgo/matches` or the user provides a 5E match link.
 2. HLTV match/team/stats pages for canonical history.
 3. BO3.gg for live cross-check and accessible team/player data.
 4. Liquipedia for event/bracket/roster context.
@@ -198,6 +207,7 @@ For credentialed analysis:
 ## Research Notes From Prior Use
 
 - 5EPlay was very effective for live BO3 analysis because `/data`, `/analysis_v1`, and `/event/log` exposed current score, map order, player stats, and historical map stats.
+- 5EPlay's match list is the preferred entry point for "正在比赛中" prompts because it can reveal the current live teams and the exact `csgo_mc_*` match id even when the user only gives team names and score.
 - 5E event logs can lead the main `bouts_state` score by one round. When this happens, state that the event log is fresher and use it cautiously.
 - HLTV is best for historical completeness, but scraping can fail. Search by team names plus numeric match id when a direct page is unknown.
 - BO3.gg is useful when you need fast live match pages or player tables and HLTV is blocked.
