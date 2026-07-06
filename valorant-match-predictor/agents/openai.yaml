@@ -1,0 +1,4 @@
+interface:
+  display_name: "Valorant Match Predictor"
+  short_description: "Live Valorant match prediction"
+  default_prompt: "Use $valorant-match-predictor to estimate live Valorant map and series win probabilities."
