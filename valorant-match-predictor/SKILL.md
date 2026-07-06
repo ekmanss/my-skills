@@ -7,7 +7,7 @@ description: Valorant esports match analysis and prediction workflow for live ma
 
 ## Overview
 
-Use this skill to produce fast, source-backed Valorant esports predictions for live maps and full series. Treat all probabilities as calibrated judgment, not deterministic betting advice.
+Use this skill to produce source-backed Valorant esports predictions for live maps and full series. The default workflow is a full pre-judgment analysis, not a lightweight score reaction. Treat all probabilities as calibrated judgment, not deterministic betting advice.
 
 ## Core Workflow
 
@@ -17,17 +17,30 @@ Use this skill to produce fast, source-backed Valorant esports predictions for l
    - For Liquipedia match links, use the MediaWiki parse API when normal pages block scripts:
      `https://liquipedia.net/valorant/api.php?action=parse&page=<MATCH_TITLE>&prop=wikitext|text|links&format=json&formatversion=2`
    - Extract the `vlr=` id from Liquipedia wikitext, then open `https://www.vlr.gg/<id>`.
-3. Collect the minimum useful data:
-   - Current map score and side split from VLR or stream/official scoreboard.
-   - Map order, veto, picks, and series state from Liquipedia/VLR.
-   - Team map stats from VLR team stats pages: `/team/stats/<team-id>/<slug>/`.
-   - Completed-map details from Liquipedia/VLR: first kills, post-plant conversion, clutches, player ACS/KDA, FK/FD, KAST.
-   - Recent form and head-to-head from match pages.
-4. Estimate the current map win rate.
-5. Estimate the series win rate by combining the current map probability with remaining-map baselines.
-6. Answer in the user's language. For Chinese prompts, use concise Chinese and include concrete percentages.
+3. Build the historical baseline before giving any probability:
+   - Recent 5 matches for both teams, prioritizing the current roster and current patch.
+   - Map pool by team: map count, win rate, recent results, attack/defense round win rates, and comfort maps.
+   - Head-to-head and common-opponent context when available.
+   - Roster, role, agent, IGL, substitute, and role-swap context.
+4. Build the current-match layer:
+   - Current map score and side split from VLR, official stream/scoreboard, or another named live source.
+   - Map order, veto, picks, decider, and series state from Liquipedia/VLR.
+   - Completed-map details from Liquipedia/VLR: first kills, post-plant conversion, retakes, clutches, player ACS/KDA, FK/FD, KAST, and economy swings when available.
+5. Build the matchup layer:
+   - Tactical style: fast exec vs default-heavy, contact pace, lurk value, post-plant quality, retake quality, clutch frequency, and economy vulnerability.
+   - Team-on-team fit: how each team's style attacks the opponent's usual weaknesses on the current and remaining maps.
+   - Player-on-player fit: duelist first-contact battle, initiator setup quality, controller utility value, sentinel/lurker survival, and current individual form.
+6. Synthesize only after steps 1-5 are attempted. Weight live score and side context first, then map strength, veto ownership, recent form, tactical/style matchup, player matchup, and historical baseline.
+7. Estimate the current map win rate, then estimate the series win rate by combining the current map probability with remaining-map baselines.
+8. Answer in the user's language. For Chinese prompts, use concise Chinese and include concrete percentages.
 
-Read `references/data-sources.md` when choosing among sources, explaining source quality, or doing deeper pre-match/team research.
+Read `references/data-sources.md` when choosing among sources, explaining source quality, or doing match research.
+
+## Mandatory Data Gate
+
+Do not give a final probability until the full workflow above has been attempted. If a source is blocked, stale, or missing a stat, explicitly say what could not be verified and mark the affected estimate as lower-confidence or provisional. Do not silently skip historical data, current live data, tactical style, team matchup, player matchup, or recent form.
+
+For very live prompts, keep the response concise but still do the full analysis. Reuse previously gathered full-context data only when the same match and map are still in progress and the user is asking for a score update; refresh any layer that may have changed.
 
 ## Probability Heuristics
 
@@ -56,21 +69,23 @@ Do not overfit old all-time stats. Prefer recent maps from the same roster and c
 
 ## Live Update Rules
 
-- If the user says "current 9-8" or similar, update from the last verified context without redoing all research unless the map/series state may have changed.
+- If the user says "current 9-8" or similar, update from the last verified full-context analysis without redoing all research only when the match, map, sides, veto, and roster context are unchanged.
 - Refresh sources when the user provides a new link, a new map starts, or the current score conflicts with the last known state.
 - If VLR and Liquipedia conflict, usually prefer VLR for live score/side and Liquipedia for tournament structure/veto. Prefer official stream/official VALORANT Esports for final score if available.
 - If public sources lag behind the user-provided score, phrase it as: "按你给的实时比分..." and base the probability on that score.
 
 ## Output Shape
 
-For live-score prompts, keep the answer tight:
+For live-score prompts, keep the answer tight but include the full-analysis signal:
 
 1. State verified context: map, score, side, map pick, series score.
-2. Give current map probabilities.
-3. Give series probabilities if relevant.
-4. Explain 2-4 decisive reasons.
-5. Give swing thresholds for the next 1-3 rounds.
-6. Link sources used.
+2. Summarize historical baseline: recent form, map pool, and head-to-head/common-opponent context.
+3. Summarize tactical and player matchup: style fit, key player duels, and role pressure points.
+4. Give current map probabilities.
+5. Give series probabilities if relevant.
+6. Explain 2-4 decisive reasons and any missing-data caveats.
+7. Give swing thresholds for the next 1-3 rounds.
+8. Link sources used.
 
 Example:
 
@@ -90,15 +105,17 @@ Example:
 分水岭：NRG 到 12-5 基本锁图；KC 追到 11-8 才有真实压力。
 ```
 
-## Research Checklist
+## Mandatory Research Checklist
 
-For deeper pre-match analysis, gather:
+Before giving a judgment, attempt to gather and reason from every item below:
 
 - Recent 5 matches for both teams.
 - Current roster and role changes.
 - Map pool: win rate, map count, recent results, attack/defense round win rates.
 - Map veto logic: bans, picks, decider, comfort maps.
+- Team matchup: how each team's pace, defaults, executes, retakes, and post-plants line up against the opponent.
 - Player form: ACS/R2.0, ADR, KAST, FK/FD, duelist first contact, controller/sentinel survival.
+- Player matchup: key role-on-role pressure points, especially duelists, initiators, controllers, and sentinel/lurk roles.
 - Style: fast exec vs default-heavy, post-plant conversion, retake quality, clutch frequency, economy vulnerability.
 - Event context: elimination/qualification pressure, BO3/BO5, upper/lower bracket, patch.
 

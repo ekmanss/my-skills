@@ -127,20 +127,26 @@ Limitations:
 2. Extract teams, event, BO format, map veto, map order, current/finished maps, and `vlr=` id.
 3. Open the VLR match page for live score and side splits.
 4. Open VLR team stats pages from team links.
-5. Use Liquipedia completed-map data for first kills, post-plants, and player performance.
+5. Gather both teams' recent 5 matches, current roster/roles, map pool, attack/defense splits, and same-map recent results.
+6. Use Liquipedia completed-map data for first kills, post-plants, retakes, clutches, player performance, and economy swings.
+7. Add tactical and matchup analysis: pace/defaults, exec quality, post-plants, retakes, player role duels, and style fit against the opponent.
+8. Only then produce map and series probabilities, citing missing or stale data as caveats.
 
 ### User Gives Only Teams and Score
 
 1. Search VLR and Liquipedia by team names, event, and current date.
 2. Use VLR live match page if found.
-3. If not found, use the user's score as live state and say public pages could not be verified quickly.
+3. Gather recent form, map pool, roster/role context, player form, tactical style, and matchup context from the best available sources.
+4. If not found, use the user's score as live state and say public pages could not be verified quickly.
+5. Mark the probability provisional if key historical, current-match, tactical, or player-matchup data could not be verified.
 
 ### User Asks for First/Second/Third Map Prediction
 
 1. Identify current map and series score.
 2. If a prior map ended, use its actual first-kill, post-plant, player stat, and economy/clutch signals.
 3. For the next map, use map pick ownership, map win rate, attack/defense splits, and recent same-map results.
-4. Keep current map probability separate from series probability.
+4. Add team style and player-role matchup for that specific map before estimating probability.
+5. Keep current map probability separate from series probability.
 
 ### User Asks for Deep Team Style Research
 
@@ -148,3 +154,4 @@ Limitations:
 2. Add Liquipedia roster/event/patch/veto context.
 3. Add RIB.GG/THESPIKE for analytics and roster/news cross-checks.
 4. Summarize style in operational terms: pace, defaulting, post-plant, retakes, first-contact dependence, map-specific comfort.
+5. Translate the style read into matchup impact: which team benefits on each map, which roles are under pressure, and which live-round signals would confirm or refute the read.
