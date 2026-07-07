@@ -131,7 +131,7 @@ Limitations:
 5. Gather both teams' recent 5 matches, current roster/roles, map pool, attack/defense splits, and same-map recent results.
 6. Use Liquipedia completed-map data for first kills, post-plants, retakes, clutches, player performance, and economy swings.
 7. Add tactical and matchup analysis: pace/defaults, exec quality, post-plants, retakes, player role duels, and style fit against the opponent.
-8. For in-progress maps with enough current state, run `scripts/round_model.py` before final probabilities.
+8. For in-progress maps, use Markov-style round-state reasoning across score, side, economy, ult economy, map strength, player form, and tactical matchup before final probabilities.
 9. Only then produce map and series probabilities, citing missing or stale data as caveats.
 
 ### User Gives Only Teams and Score
@@ -140,7 +140,7 @@ Limitations:
 2. Use VLR live match page if found.
 3. Gather recent form, map pool, roster/role context, player form, tactical style, and matchup context from the best available sources.
 4. If not found, use the user's score as live state and say public pages could not be verified quickly.
-5. Run `scripts/round_model.py` when score and MR format are known.
+5. Use Markov-style round-state reasoning when score and MR format are known.
 6. Mark the probability provisional if key historical, current-match, tactical, or player-matchup data could not be verified.
 
 ### User Asks for First/Second/Third Map Prediction
@@ -161,7 +161,7 @@ Never use these as inputs, anchors, calibration targets, or sanity checks:
 
 It is acceptable to use factual data from the same sites: score, map, side, round history, economy/ult context when available, player stats, roster, veto, map pool, historical map win rate, attack/defense splits, and recent results.
 
-For in-progress maps with enough current state, calculate independently with `scripts/round_model.py` using score, MR format, an independently estimated `p-round-a`, and optional total-round lines.
+For in-progress maps with enough current state, calculate independently from score, MR format, side, economy/ult state, map strength, player form, tactical matchup, and series context. Do not collapse the analysis into a fixed single per-round probability.
 
 ### User Asks for Deep Team Style Research
 

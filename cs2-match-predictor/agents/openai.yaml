@@ -1,4 +1,4 @@
 interface:
   display_name: "CS2 Match Predictor"
-  short_description: "Independent CS2 Markov match prediction"
+  short_description: "Independent CS2 match prediction"
   default_prompt: "Use $cs2-match-predictor to analyze a live CS2 match from current score, map, sides, form, and matchup data."

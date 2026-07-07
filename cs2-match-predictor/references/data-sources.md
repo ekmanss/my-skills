@@ -213,7 +213,7 @@ Never use these as inputs, anchors, calibration targets, or sanity checks:
 
 It is acceptable to use factual data from the same sites: score, map, side, round log, economy, player stats, roster, veto, map pool, historical map win rate, CT/T splits, and recent results.
 
-For in-progress maps with enough current state, calculate independently with `scripts/round_model.py` using score, MR format, an independently estimated `p-round-a`, and optional total-round lines.
+For in-progress maps with enough current state, calculate independently from score, MR format, side, economy/weapon state, map strength, player form, tactical matchup, overtime path, and series context. Do not collapse the analysis into a fixed single per-round probability.
 
 ## Research Notes From Prior Use
 

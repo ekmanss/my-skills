@@ -1,4 +1,4 @@
 interface:
   display_name: "Valorant Match Predictor"
-  short_description: "Independent Valorant Markov prediction"
+  short_description: "Independent Valorant match prediction"
   default_prompt: "Use $valorant-match-predictor to estimate live Valorant map and series win probabilities."

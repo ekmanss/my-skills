@@ -69,7 +69,7 @@ Use this reference when selecting data for MLB game prediction. Prefer structure
 
 ## Recommended Source Mix by Task
 
-- **Live win probability**: calculate independently with `scripts/markov_wp.py` when score, inning, half-inning, outs, bases, and home/away context are known. Feed it MLB live state plus team run scoring/event-rate adjustments. Use ESPN only to cross-check factual live state. Add Savant for batted-ball quality.
+- **Live win probability**: calculate independently from live state using Markov-style base/out and remaining-inning reasoning. Use MLB live state plus team run scoring, pitcher, lineup, bullpen, park, weather, and current-game adjustments. Use ESPN only to cross-check factual live state. Add Savant for batted-ball quality.
 - **Pre-game prediction**: MLB schedule/probables + standings/team stats + FanGraphs projections/park factors + Savant pitcher/hitter trends + injury/lineup news.
 - **Historical model/backtest**: Retrosheet play-by-play + Lahman season/team tables + Savant modern pitch quality.
 - **Player matchup**: Savant pitch arsenal and batter quality-of-contact + MLB player stats/splits + FanGraphs/Stathead splits.

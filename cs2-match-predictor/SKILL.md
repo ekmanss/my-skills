@@ -7,27 +7,28 @@ description: CS2 esports match analysis and independent prediction workflow for 
 
 ## Goal
 
-Produce an independent CS2 map, series, and regulation round-line probability read from verified live state, map/side context, and a local score model.
+Produce an independent CS2 map, series, and totals probability read from comprehensive historical data, tactical context, map data, live match data, and Markov-style round-state reasoning. Do not reduce the workflow to a fixed per-round formula.
 
 ## Hard Rules
 
 - Do not use sportsbook odds, market-implied probabilities, bookmaker lines, site prediction percentages, analyst pick percentages, or third-party model probabilities as inputs, anchors, or sanity checks.
-- Use `references/data-sources.md` when choosing or explaining sources.
-- Try 5EPlay first for public in-progress matches when the teams or match are likely covered.
-- Verify map, score, half/stage, CT/T side, series score, and refresh time before giving a final live probability.
-- Run `scripts/round_model.py` when the current score is in regulation and a defensible `p-round-a` can be estimated.
-- Do not give a final probability until historical data, team style, team matchup, player matchup, map data, recent form, current-match data, and model calculation have been attempted.
-- Treat `p-round-a` as an estimate from verified map, side, economy, weapon state, form, roster, and matchup context. Label it as estimated and give a range when key state is missing.
-- If the map is in overtime or the current state is not supported by the script, say the model cannot produce a formal live probability for that state.
+- Do not give a final probability until historical data, team style, team matchup, player matchup, map data, recent form, current-match data, and probability reasoning have been attempted.
+- Use Markov thinking as a state-transition frame: score, rounds remaining, side, economy, weapon state, map, player form, series state, and overtime paths. Do not pretend one fixed per-round rate captures the whole map.
+- Treat any calculator or model helper as optional only when its assumptions match the current state. If the state is richer than the helper, use a custom calculation, sensitivity cases, or a probability range.
+- Keep map probability, series probability, and totals probability separate. Say whether totals include or exclude overtime.
+- If a layer or source cannot be verified, name the gap and widen the final range.
 
-## Required Facts
+## Tool And Data Acquisition
 
-Collect as many of these as the prompt and sources allow:
+Use the best available tools, not just search snippets:
 
-- Teams, event, BO format, series score, current map, map order, map pick/veto, and current score.
-- Half/stage, CT/T sides, economy/weapon state, timeout or tech-pause context if relevant.
-- Recent 5-10 matches, current roster/substitutes, map pool, same-map results, CT/T splits, and pistol/conversion signals when available.
-- Current-map player and tactical signals: opening kills, AWP impact, anchor pressure, clutch/multikill events, economy swings, and side split.
+- Prefer structured or source-close data: 5EPlay match list and JSON endpoints, HLTV, BO3.gg, Liquipedia, Dust2.us, GRID/Bayes/Abios/PandaScore when credentials exist, and official tournament sources.
+- Use Chrome when live pages, logged-in sessions, dynamic scoreboards, or anti-scraping behavior require the user's browser.
+- Use chrome-devtools when available to inspect network calls, JSON payloads, rendered DOM, console state, and live scoreboard updates.
+- Use Playwright for browser automation, snapshots, screenshots, and dynamic-page extraction.
+- Use Python, Node, curl, jq, local scripts, or site-specific parsers to fetch and normalize match history, map stats, and live state.
+- If a useful local tool is missing, install it globally or user-scoped in the active environment when allowed, verify it works, then use it.
+- Read `references/data-sources.md` when choosing sources or explaining source quality.
 
 ## Analysis Layers
 
@@ -35,46 +36,28 @@ Build the probability from these layers, in order:
 
 1. **Historical baseline**: recent 5-10 matches, current roster, event/LAN-online context, head-to-head, common opponents, and current patch/season.
 2. **Team style**: pace, defaults, contact-heavy rounds, execute depth, mid control, AWP reliance, lurk timing, post-plants, retakes, and force-buy volatility.
-3. **Team matchup**: how one team’s T defaults attack the opponent’s CT setups, and how CT rotations, anchors, or utility match the opponent’s pace.
+3. **Team matchup**: how one team's T defaults attack the opponent's CT setups, and how CT rotations, anchors, or utility match the opponent's pace.
 4. **Player matchup**: entry pair, AWP duel, star rifler pressure, anchor isolation, clutch players, support pieces, substitutes, and current individual form.
 5. **Map data**: veto/order, map pick ownership, historical map win rate, CT/T splits, recent same-map results, pistol and conversion signals.
 6. **Recent and current-match data**: latest score, side, half/stage, economy/weapon state, completed-map signals, round momentum, player ratings, opening kills, and clutch/multikill events.
-7. **Calculation**: estimate `p-round-a`, run the local model when supported, then synthesize map, series, and regulation round-line probabilities.
-
-If a layer cannot be verified, name the missing layer and widen the final range.
-
-## Process
-
-1. Resolve the match. For live matches without a URL, check `https://event.5eplay.com/csgo/matches` first; if found, use structured 5EPlay data as the primary factual feed.
-2. Ignore odds, market, prediction, percentage, and recommendation fields if present.
-3. Estimate `p-round-a` conservatively from verified context. Do not overfit old all-time map stats.
-4. Run the model for regulation live states:
-
-```bash
-python3 scripts/round_model.py --team-a Imperial --team-b Alka --score 1-3 --p-round-a 0.46 --lines 18.5,21.5,22.5,23.5
-```
-
-5. Explain adjustments in plain language across the analysis layers. Score leverage comes first live; historical and matchup layers anchor pre-map or early-map reads.
-6. Keep map probability, series probability, and regulation round-line probability separate.
+7. **Probability synthesis**: use Markov-style round-state reasoning, then synthesize map, series, and totals probabilities with sensitivity ranges.
 
 ## Output
 
-For live-score prompts, answer in the user's language with:
+Answer in the user's language with:
 
-1. Verified context: match, map, score, sides, series score, map pick, refresh/source.
-2. Model input: estimated `p-round-a`, what supports it, and what is missing.
-3. Historical, style, team matchup, player matchup, map, recent-form, and current-match drivers.
-4. Current-map probability with a reasonable range.
+1. Verified context: match, event, series, map, score, sides, map pick/veto, and source refresh time.
+2. Data used from each analysis layer; name missing layers.
+3. Probability reasoning: round-state leverage, side/economy implications, overtime path, and key assumptions.
+4. Current-map probability with range and confidence.
 5. Series probability if relevant.
-6. Regulation round-line probabilities for requested lines; say clearly if totals exclude OT.
-7. Missing-data caveats and confidence.
-8. Swing conditions for the next 1-3 rounds.
-9. Sources used.
+6. Totals probability if requested, clearly stating whether overtime is included.
+7. Swing conditions for the next 1-3 rounds.
 
 ## Failure Modes
 
 - If public sources lag behind the user's score, say which state is used and mark the probability provisional.
 - If side/team mapping from event logs is unclear, do not use log scores as team scores.
-- If economy or side state is unknown, widen the range.
-- If the score is already in overtime, do not present the regulation script as the final live model.
+- If economy, side, or player data is unknown, widen the range.
+- If the map is in overtime or an unsupported state, do not force a fixed regulation model.
 - Do not invent economy, utility, role, or player data.
