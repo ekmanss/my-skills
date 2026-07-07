@@ -1,44 +1,51 @@
 ---
 name: valorant-match-predictor
-description: Valorant esports match analysis and prediction workflow for live map and series win-probability estimates, map-by-map tactical reads, team style research, and source-backed analysis from Liquipedia, VLR.gg, RIB.GG, THESPIKE, BO3.gg, official VALORANT Esports, and related data sources. Use when the user provides a Valorant match link, current score, side information such as attack/defense, or asks for first/second/third map probabilities, live win rates, map veto interpretation, team form, player performance, or matchup prediction.
+description: Valorant esports match analysis and independent prediction workflow for live map and series win-probability estimates, map-by-map tactical reads, team style research, and source-backed analysis from Liquipedia, VLR.gg, RIB.GG, THESPIKE, BO3.gg, official VALORANT Esports, and related data sources. Use when the user provides a Valorant match link, current score, side information such as attack/defense, or asks for independently calculated first/second/third map probabilities, live win rates, map veto interpretation, team form, player performance, or matchup prediction that must not copy sportsbook odds or third-party model probabilities.
 ---
 
 # Valorant Match Predictor
 
 ## Overview
 
-Use this skill to produce source-backed Valorant esports predictions for live maps and full series. The default workflow is a full pre-judgment analysis, not a lightweight score reaction. Treat all probabilities as calibrated judgment, not deterministic betting advice.
+Use this skill to produce source-backed Valorant esports predictions for live maps and full series. The default workflow is a full pre-judgment analysis, not a lightweight score reaction. Calculate probabilities independently; never use sportsbook odds, market-implied probabilities, VLR odds, BO3.gg/Tips.gg widgets, analyst pick percentages, or any third-party model probability as an input, anchor, or sanity check.
+
+Read `references/data-sources.md` when choosing among sources, explaining source quality, or doing match research.
+
+Use `scripts/round_model.py` for in-progress maps when enough current state is available.
 
 ## Core Workflow
 
-1. Verify the live context first. For active or recent matches, browse or fetch current sources before answering. If the user's score is ahead of public pages, use the user's score as the live state and say so.
+1. Verify the live context first. For active or recent matches, browse or fetch current factual sources before answering. If the user's score is ahead of public pages, use the user's score as the live state and say so.
 2. Resolve the match:
    - Identify teams, aliases, event, BO format, series score, current map, map pick, map veto, current score, and attack/defense sides.
    - For Liquipedia match links, use the MediaWiki parse API when normal pages block scripts:
      `https://liquipedia.net/valorant/api.php?action=parse&page=<MATCH_TITLE>&prop=wikitext|text|links&format=json&formatversion=2`
    - Extract the `vlr=` id from Liquipedia wikitext, then open `https://www.vlr.gg/<id>`.
+   - Ignore all odds, market, prediction, percentage, and recommendation fields if present.
 3. Build the historical baseline before giving any probability:
    - Recent 5 matches for both teams, prioritizing the current roster and current patch.
-   - Map pool by team: map count, win rate, recent results, attack/defense round win rates, and comfort maps.
+   - Map pool by team: map count, historical win rate, recent results, attack/defense round win rates, and comfort maps.
    - Head-to-head and common-opponent context when available.
    - Roster, role, agent, IGL, substitute, and role-swap context.
 4. Build the current-match layer:
-   - Current map score and side split from VLR, official stream/scoreboard, or another named live source.
+   - Current map score and side split from VLR, official stream/scoreboard, or another named factual live source.
    - Map order, veto, picks, decider, and series state from Liquipedia/VLR.
    - Completed-map details from Liquipedia/VLR: first kills, post-plant conversion, retakes, clutches, player ACS/KDA, FK/FD, KAST, and economy swings when available.
 5. Build the matchup layer:
    - Tactical style: fast exec vs default-heavy, contact pace, lurk value, post-plant quality, retake quality, clutch frequency, and economy vulnerability.
    - Team-on-team fit: how each team's style attacks the opponent's usual weaknesses on the current and remaining maps.
    - Player-on-player fit: duelist first-contact battle, initiator setup quality, controller utility value, sentinel/lurker survival, and current individual form.
-6. Synthesize only after steps 1-5 are attempted. Weight live score and side context first, then map strength, veto ownership, recent form, tactical/style matchup, player matchup, and historical baseline.
-7. Estimate the current map win rate, then estimate the series win rate by combining the current map probability with remaining-map baselines.
-8. Answer in the user's language. For Chinese prompts, use concise Chinese and include concrete percentages.
-
-Read `references/data-sources.md` when choosing among sources, explaining source quality, or doing match research.
+6. Estimate probability independently:
+   - For in-progress maps, use Markov calculation when enough state is known: current map score, MR format, teams, map, side/half context or a clear reason side context is unavailable, and a defensible independently estimated per-round probability.
+   - Estimate `p-round-a` from map strength, current attack/defense side, economy phase, ult economy, pistol/bonus/full-buy context, player form, tactical matchup, recent same-map results, and roster context. Do not derive it from odds or a provider's live win probability.
+   - Run `scripts/round_model.py` as the numerical anchor for current-map probability and overtime probability.
+7. Synthesize only after steps 1-6 are attempted. Weight Markov score math and side state first, then map strength, veto ownership, recent form, tactical/style matchup, player matchup, and historical baseline.
+8. Estimate the series win rate by combining the current map probability with remaining-map baselines.
+9. Answer in the user's language. For Chinese prompts, use concise Chinese and include concrete percentages.
 
 ## Mandatory Data Gate
 
-Do not give a final probability until the full workflow above has been attempted. If a source is blocked, stale, or missing a stat, explicitly say what could not be verified and mark the affected estimate as lower-confidence or provisional. Do not silently skip historical data, current live data, tactical style, team matchup, player matchup, or recent form.
+Do not give a final probability until the full workflow above has been attempted. For in-progress maps, do not give a final probability until Markov calculation has been attempted when score, MR format, and enough state are known. If a source is blocked, stale, or missing a stat, explicitly say what could not be verified and mark the affected estimate as lower-confidence or provisional. Do not silently skip historical data, current live data, Markov score math, tactical style, team matchup, player matchup, or recent form.
 
 For very live prompts, keep the response concise but still do the full analysis. Reuse previously gathered full-context data only when the same match and map are still in progress and the user is asking for a score update; refresh any layer that may have changed.
 
@@ -46,14 +53,15 @@ For very live prompts, keep the response concise but still do the full analysis.
 
 Build probabilities from these factors, in this order:
 
-1. **Score and rounds remaining**: a late 10-8 lead is more valuable than an early 5-3 lead.
-2. **Side context**: always interpret score with attack/defense. A 7-5 half is strong if earned on the weaker side, weaker if earned on the stronger side.
-3. **Map strength**: use map win rate plus attack/defense round win rates, not overall team strength alone.
-4. **Map ownership**: give the picker a small baseline edge only when the pick matches historical strength.
-5. **Economy phase**: pistol, anti-eco, bonus, and first full-buy rounds can move live probabilities sharply.
-6. **Series state**: if one team already leads the series, separate map probability from series probability.
-7. **Player and style signals**: first-kill gap, post-plant conversion, duelist impact, sentinel survival, and controller utility value matter more than raw kills alone.
-8. **Recent form and matchup**: recent event results and head-to-head matter, but do not override live score and side state.
+1. **Markov score math for live maps**: with sufficient state, run `scripts/round_model.py` using an independently estimated per-round probability.
+2. **Score and rounds remaining**: a late 10-8 lead is more valuable than an early 5-3 lead.
+3. **Side context**: always interpret score with attack/defense. A 7-5 half is strong if earned on the weaker side, weaker if earned on the stronger side.
+4. **Map strength**: use historical map win rate plus attack/defense round win rates, not provider prediction percentages.
+5. **Map ownership**: give the picker a small baseline edge only when the pick matches historical strength.
+6. **Economy phase**: pistol, anti-eco, bonus, first full-buy rounds, and ult economy can move live probabilities sharply.
+7. **Series state**: if one team already leads the series, separate map probability from series probability.
+8. **Player and style signals**: first-kill gap, post-plant conversion, duelist impact, sentinel survival, and controller utility value matter more than raw kills alone.
+9. **Recent form and matchup**: recent event results and head-to-head matter, but do not override live score and side state.
 
 Use these anchors, then adjust for map/side/team context:
 
@@ -71,8 +79,23 @@ Do not overfit old all-time stats. Prefer recent maps from the same roster and c
 
 - If the user says "current 9-8" or similar, update from the last verified full-context analysis without redoing all research only when the match, map, sides, veto, and roster context are unchanged.
 - Refresh sources when the user provides a new link, a new map starts, or the current score conflicts with the last known state.
-- If VLR and Liquipedia conflict, usually prefer VLR for live score/side and Liquipedia for tournament structure/veto. Prefer official stream/official VALORANT Esports for final score if available.
+- If VLR and Liquipedia conflict, usually prefer VLR for factual live score/side and Liquipedia for tournament structure/veto. Prefer official stream/official VALORANT Esports for final score if available.
 - If public sources lag behind the user-provided score, phrase it as: "按你给的实时比分..." and base the probability on that score.
+- Never use or quote betting odds, bookmaker lines, market-implied probabilities, site prediction percentages, or third-party model probabilities.
+
+## Markov Round Model Script
+
+Run:
+
+```bash
+python3 scripts/round_model.py --team-a NRG --team-b KC --score 11-5 --p-round-a 0.58 --lines 20.5,21.5,22.5
+```
+
+Interpretation:
+
+- `p-round-a` is Team A's independently estimated probability of winning each remaining regulation round from the current context, after considering side, map, economy, ult economy, form, and player matchup.
+- The script treats overtime as a separate event and defaults overtime win probability to 50%.
+- Use the output as the Markov mathematical anchor, then adjust final prose only for verified tactical/player context the script does not know.
 
 ## Output Shape
 
@@ -81,29 +104,11 @@ For live-score prompts, keep the answer tight but include the full-analysis sign
 1. State verified context: map, score, side, map pick, series score.
 2. Summarize historical baseline: recent form, map pool, and head-to-head/common-opponent context.
 3. Summarize tactical and player matchup: style fit, key player duels, and role pressure points.
-4. Give current map probabilities.
+4. Give Markov current-map probabilities, or a clear reason Markov could not be run.
 5. Give series probabilities if relevant.
 6. Explain 2-4 decisive reasons and any missing-data caveats.
 7. Give swing thresholds for the next 1-3 rounds.
 8. Link sources used.
-
-Example:
-
-```markdown
-按你给的实时比分：图一 Breeze，NRG 11-5 KC，NRG 进攻。
-
-当前图一胜率：
-- NRG：98%
-- KC：2%
-
-整场 BO3：
-- NRG：86%
-- KC：14%
-
-关键原因：Breeze 是 NRG 选图，NRG 进攻已经拿到 11 分；KC 防守端被打穿。第二图是 KC 的 Fracture，所以系列赛不能直接给 NRG 95%+。
-
-分水岭：NRG 到 12-5 基本锁图；KC 追到 11-8 才有真实压力。
-```
 
 ## Mandatory Research Checklist
 
@@ -111,8 +116,9 @@ Before giving a judgment, attempt to gather and reason from every item below:
 
 - Recent 5 matches for both teams.
 - Current roster and role changes.
-- Map pool: win rate, map count, recent results, attack/defense round win rates.
+- Map pool: historical win rate, map count, recent results, attack/defense round win rates.
 - Map veto logic: bans, picks, decider, comfort maps.
+- Live Markov score math when current score and MR format are known.
 - Team matchup: how each team's pace, defaults, executes, retakes, and post-plants line up against the opponent.
 - Player form: ACS/R2.0, ADR, KAST, FK/FD, duelist first contact, controller/sentinel survival.
 - Player matchup: key role-on-role pressure points, especially duelists, initiators, controllers, and sentinel/lurk roles.
@@ -122,7 +128,8 @@ Before giving a judgment, attempt to gather and reason from every item below:
 ## Common Pitfalls
 
 - Do not treat 5-7 as equal across sides; 5 defense rounds on Haven is very different from 5 attack rounds.
-- Do not use only series odds after a map has started; live score dominates.
+- Do not use external odds or third-party prediction percentages, even as a sanity check.
+- Do not skip Markov for live maps when score and MR format are known.
 - Do not call a series over because map one is nearly over if the opponent's strong pick is map two.
 - Do not cite exact live data without naming the source and refresh time when the user needs precision.
 - Do not invent player stats if live pages have not populated them yet.

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Independent CS2 live map Markov calculator.
+"""Independent Valorant live map Markov calculator.
 
 This script uses score state and an independently estimated per-round
 probability. It does not fetch or use sportsbook odds, market probabilities, or
 third-party prediction percentages.
 """
+
 import argparse
 import json
 import math
@@ -22,7 +23,7 @@ def parse_score(value):
             parts = [p for p in value.replace(":", "-").replace(" ", "-").split("-") if p != ""]
             if len(parts) == 2:
                 return int(parts[0]), int(parts[1])
-    raise ValueError("score must look like 1-3 or 9:11")
+    raise ValueError("score must look like 11-5 or 9:8")
 
 
 def model(score_a, score_b, p_round_a, ot_win_a=0.5, mr=12, lines=None):
@@ -90,14 +91,14 @@ def model(score_a, score_b, p_round_a, ot_win_a=0.5, mr=12, lines=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Independent CS2 MR12 Markov live map win and total-round probability calculator.")
+    parser = argparse.ArgumentParser(description="Independent Valorant MR12 Markov live map win and total-round probability calculator.")
     parser.add_argument("--team-a", default="Team A")
     parser.add_argument("--team-b", default="Team B")
-    parser.add_argument("--score", required=True, help="Current score for team A-team B, e.g. 1-3 or 9:11")
+    parser.add_argument("--score", required=True, help="Current score for team A-team B, e.g. 11-5 or 9:8")
     parser.add_argument("--p-round-a", type=float, required=True, help="Independently estimated Team A probability for each remaining regulation round")
     parser.add_argument("--ot-win-a", type=float, default=0.5, help="Independently estimated Team A overtime win probability")
-    parser.add_argument("--mr", type=int, default=12, help="Max rounds per half. CS2 standard is 12.")
-    parser.add_argument("--lines", default="18.5,20.5,21.5,22.5,23.5", help="Comma-separated total round lines")
+    parser.add_argument("--mr", type=int, default=12, help="Max rounds per half. Valorant standard is 12.")
+    parser.add_argument("--lines", default="20.5,21.5,22.5,23.5", help="Comma-separated total round lines")
     args = parser.parse_args()
 
     if not 0 <= args.p_round_a <= 1:

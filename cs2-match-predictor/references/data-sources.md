@@ -1,6 +1,6 @@
 # CS2 Data Sources
 
-Use this reference when choosing data sources or explaining source quality.
+Use this reference when choosing data sources or explaining source quality. Do not use sportsbook odds, market-implied probabilities, site prediction percentages, or third-party model win probabilities as inputs, anchors, or sanity checks.
 
 ## Best Public Historical Sources
 
@@ -78,7 +78,7 @@ Live discovery workflow:
 3. Fetch `/data` first for live score, current map, sides, player stats, economy, veto, and series state.
 4. Fetch `/analysis_v1` for pre-match comparison, historical baselines, map pool, and player references.
 5. Fetch `/event/log` when the live score looks stale or the user reports a score one round ahead of `bouts_state`.
-6. Use the rendered match/list pages for discovery and sanity checks; use the structured endpoints as the analytic source of record.
+6. Use the rendered match/list pages for discovery and factual checks; use the structured endpoints as the analytic source of record.
 
 Fields to inspect:
 - `data.match.mc_info`: teams, format, event, planned start.
@@ -91,7 +91,7 @@ Limits:
 - Not all CS2 matches are covered.
 - Chinese team aliases may differ from HLTV names.
 - Event-log CT/T scores must be mapped to current sides before treating as team score.
-- Some market/odds fields can be stale; do not use them as the main model.
+- Ignore market/odds fields completely. Use 5EPlay for factual live score, sides, logs, player stats, and economy only.
 
 ### Dust2.us
 
@@ -107,7 +107,7 @@ Limits:
 
 ### Tips.gg, EGamersWorld, Strafe, SofaScore, Esports Charts
 
-Use as secondary confirmation for schedules, live score, event pages, and odds/sentiment. Do not treat as primary player-stat sources unless they expose the missing match cleanly.
+Use as secondary confirmation for schedules, live score, and event pages. Do not use odds, prediction widgets, or sentiment percentages.
 
 ## Best Live / Official Data Sources
 
@@ -135,7 +135,7 @@ Official live match data supplier for major tournament ecosystems, including ESL
 
 Strengths:
 - High-granularity live match data.
-- Betting-grade official data for top-tier events.
+- High-granularity official data for top-tier events.
 
 Limits:
 - Enterprise/commercial access.
@@ -159,15 +159,14 @@ Useful URLs:
 
 ### PandaScore
 
-Commercial stats and odds API. Use if credentials exist for schedules, live stats, and odds products.
+Commercial stats API. Use if credentials exist for schedules and live stats.
 
 Strengths:
-- Public developer positioning for real-time esports statistics and odds.
+- Public developer positioning for real-time esports statistics.
 - Broad esport coverage and documented API ecosystem.
 
 Limits:
-- Stats API and odds product are distinct.
-- Live low-latency betting use may require paid plan.
+- Ignore odds products and probability fields if present.
 
 Useful URLs:
 - `https://www.pandascore.co/`
@@ -202,7 +201,19 @@ For credentialed analysis:
 
 1. GRID or Bayes for official live telemetry.
 2. Abios, PandaScore, or GameScorekeeper for normalized live/historical APIs.
-3. Public sources above for human-readable context and sanity checks.
+3. Public sources above for human-readable factual context.
+
+## Probability Ban
+
+Never use these as inputs, anchors, calibration targets, or sanity checks:
+
+- Sportsbook odds, moneylines, handicaps, totals, market-implied probabilities, or betting consensus.
+- Site prediction percentages from HLTV, BO3.gg, 5EPlay, Tips.gg, Strafe, SofaScore, PandaScore, or any similar provider.
+- Community model probabilities, betting previews, or analyst pick percentages.
+
+It is acceptable to use factual data from the same sites: score, map, side, round log, economy, player stats, roster, veto, map pool, historical map win rate, CT/T splits, and recent results.
+
+For in-progress maps with enough current state, calculate independently with `scripts/round_model.py` using score, MR format, an independently estimated `p-round-a`, and optional total-round lines.
 
 ## Research Notes From Prior Use
 

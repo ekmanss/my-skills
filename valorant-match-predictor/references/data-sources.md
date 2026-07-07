@@ -1,6 +1,6 @@
 # Valorant Data Sources
 
-Use this reference when selecting data sources or explaining data quality.
+Use this reference when selecting data sources or explaining data quality. Do not use sportsbook odds, market-implied probabilities, site prediction percentages, or third-party model win probabilities as inputs, anchors, or sanity checks.
 
 ## Source Tiers
 
@@ -13,7 +13,7 @@ Use for:
 - VLR match ID lookup from Liquipedia `vlr=` fields.
 - Team map statistics via `/team/stats/<team-id>/<slug>/`.
 - Player aggregate stats via `/stats`.
-- Recent matches, head-to-head, event context, pre-match odds.
+- Recent matches, head-to-head, and event context.
 
 Strengths:
 - Broad pro, tier-2, Game Changers, and regional coverage.
@@ -106,6 +106,7 @@ Use for:
 Limitations:
 - Usually requires API access/credentials.
 - Coverage and latency depend on plan/source integration.
+- Ignore odds or probability fields if present.
 
 ### Third-Party VLR APIs
 
@@ -130,7 +131,8 @@ Limitations:
 5. Gather both teams' recent 5 matches, current roster/roles, map pool, attack/defense splits, and same-map recent results.
 6. Use Liquipedia completed-map data for first kills, post-plants, retakes, clutches, player performance, and economy swings.
 7. Add tactical and matchup analysis: pace/defaults, exec quality, post-plants, retakes, player role duels, and style fit against the opponent.
-8. Only then produce map and series probabilities, citing missing or stale data as caveats.
+8. For in-progress maps with enough current state, run `scripts/round_model.py` before final probabilities.
+9. Only then produce map and series probabilities, citing missing or stale data as caveats.
 
 ### User Gives Only Teams and Score
 
@@ -138,7 +140,8 @@ Limitations:
 2. Use VLR live match page if found.
 3. Gather recent form, map pool, roster/role context, player form, tactical style, and matchup context from the best available sources.
 4. If not found, use the user's score as live state and say public pages could not be verified quickly.
-5. Mark the probability provisional if key historical, current-match, tactical, or player-matchup data could not be verified.
+5. Run `scripts/round_model.py` when score and MR format are known.
+6. Mark the probability provisional if key historical, current-match, tactical, or player-matchup data could not be verified.
 
 ### User Asks for First/Second/Third Map Prediction
 
@@ -147,6 +150,18 @@ Limitations:
 3. For the next map, use map pick ownership, map win rate, attack/defense splits, and recent same-map results.
 4. Add team style and player-role matchup for that specific map before estimating probability.
 5. Keep current map probability separate from series probability.
+
+## Probability Ban
+
+Never use these as inputs, anchors, calibration targets, or sanity checks:
+
+- Sportsbook odds, moneylines, handicaps, totals, market-implied probabilities, or betting consensus.
+- VLR odds/prediction fields, BO3.gg widgets, Tips.gg/Strafe/SofaScore predictions, analyst pick percentages, or community model probabilities.
+- Commercial provider odds or probability fields from PandaScore or similar APIs.
+
+It is acceptable to use factual data from the same sites: score, map, side, round history, economy/ult context when available, player stats, roster, veto, map pool, historical map win rate, attack/defense splits, and recent results.
+
+For in-progress maps with enough current state, calculate independently with `scripts/round_model.py` using score, MR format, an independently estimated `p-round-a`, and optional total-round lines.
 
 ### User Asks for Deep Team Style Research
 
