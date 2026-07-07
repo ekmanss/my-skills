@@ -60,12 +60,23 @@ def parse_events(value: str | None, scale: float, league_rpg: float, rpg: float 
     else:
         events = dict(DEFAULT_EVENTS)
 
+    if any(prob < 0 for prob in events.values()):
+        raise SystemExit("event probabilities must be non-negative")
+    if scale <= 0:
+        raise SystemExit("manual scale values must be positive")
+    if league_rpg <= 0:
+        raise SystemExit("--league-rpg must be positive")
+    if rpg is not None and rpg < 0:
+        raise SystemExit("team runs per game must be non-negative")
+
     run_scale = scale * ((rpg / league_rpg) if rpg and league_rpg > 0 else 1.0)
     run_scale = max(0.55, min(1.55, run_scale))
     adjusted = {"out": events["out"]}
     for key in ["bb", "single", "double", "triple", "hr"]:
         adjusted[key] = events[key] * run_scale
     total = sum(adjusted.values())
+    if total <= 0:
+        raise SystemExit("event probabilities must sum to a positive value")
     return tuple((key, adjusted[key] / total) for key in ["out", "bb", "single", "double", "triple", "hr"])
 
 
@@ -194,6 +205,27 @@ def build_model(args: argparse.Namespace):
     return home_win_prob, away_events, home_events
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.inning < 1:
+        raise SystemExit("--inning must be at least 1")
+    if args.away_runs < 0 or args.home_runs < 0:
+        raise SystemExit("runs must be non-negative")
+    if args.outs < 0 or args.outs > 2:
+        raise SystemExit("--outs must be 0, 1, or 2 for an active half-inning")
+    if args.max_runs < 1:
+        raise SystemExit("--max-runs must be positive")
+    if args.max_pa < 1:
+        raise SystemExit("--max-pa must be positive")
+    if args.epsilon <= 0:
+        raise SystemExit("--epsilon must be positive")
+    if args.max_inning < args.inning:
+        raise SystemExit("--max-inning must be greater than or equal to --inning")
+    if args.max_score_diff < 1:
+        raise SystemExit("--max-score-diff must be positive")
+    if not 0.0 <= args.tie_home_prob <= 1.0:
+        raise SystemExit("--tie-home-prob must be between 0 and 1")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inning", type=int, required=True)
@@ -219,6 +251,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    validate_args(args)
     bases = parse_bases(args.bases)
     diff = args.away_runs - args.home_runs
     home_win_prob, away_events, home_events = build_model(args)

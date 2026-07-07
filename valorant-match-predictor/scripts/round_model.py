@@ -29,7 +29,9 @@ def parse_score(value):
 def model(score_a, score_b, p_round_a, ot_win_a=0.5, mr=12, lines=None):
     target = mr + 1
     regulation_rounds = mr * 2
-    if score_a < 0 or score_b < 0 or score_a + score_b > regulation_rounds:
+    if score_a < 0 or score_b < 0:
+        raise ValueError("score cannot be negative")
+    if score_a + score_b > regulation_rounds:
         raise ValueError("score is outside regulation range")
     if score_a >= target or score_b >= target:
         raise ValueError("map is already won in regulation")
@@ -72,21 +74,33 @@ def model(score_a, score_b, p_round_a, ot_win_a=0.5, mr=12, lines=None):
         distribution[key] = distribution.get(key, 0.0) + r["probability"]
 
     line_probs = {}
+    line_notes = {}
     for line in lines or []:
         over = sum(r["probability"] for r in rows if r["regulation_total_rounds"] > line)
         line_probs[f"over_{line}"] = over
         line_probs[f"under_{line}"] = 1.0 - over
+        if line >= regulation_rounds:
+            line_notes[
+                str(line)
+            ] = "Line is above or equal to regulation length; this script excludes overtime total rounds."
 
     return {
         "model": "absorbing Markov chain over remaining regulation rounds; independent, no odds or third-party probabilities",
         "score": {"team_a": score_a, "team_b": score_b},
-        "assumptions": {"mr": mr, "p_round_team_a": p_round_a, "ot_win_team_a": ot_win_a},
+        "assumptions": {
+            "mr": mr,
+            "p_round_team_a": p_round_a,
+            "ot_win_team_a": ot_win_a,
+            "round_line_scope": "regulation_only_excludes_overtime",
+        },
         "map_win_probability": {"team_a": team_a_map, "team_b": team_b_map},
         "regulation_win_probability": {"team_a": team_a_regulation, "team_b": team_b_regulation},
         "overtime_probability": overtime_probability,
         "expected_regulation_total_rounds": expected_regulation_total,
         "regulation_total_distribution": distribution,
+        "regulation_round_line_probabilities": line_probs,
         "round_line_probabilities": line_probs,
+        "round_line_notes": line_notes,
     }
 
 
@@ -108,7 +122,14 @@ def main():
 
     score_a, score_b = parse_score(args.score)
     lines = [float(x.strip()) for x in args.lines.split(",") if x.strip()]
-    result = model(score_a, score_b, args.p_round_a, args.ot_win_a, args.mr, lines)
+    try:
+        result = model(score_a, score_b, args.p_round_a, args.ot_win_a, args.mr, lines)
+    except ValueError as exc:
+        if "outside regulation" in str(exc):
+            raise SystemExit(
+                "Current score is outside regulation. This script only models regulation states and pre-overtime probability; do not use it as the final live model for overtime-in-progress maps."
+            ) from exc
+        raise
     result["teams"] = {"team_a": args.team_a, "team_b": args.team_b}
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
