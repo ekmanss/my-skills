@@ -1,28 +1,27 @@
 # MLB Data Sources
 
-Use this reference when selecting data for MLB game prediction. Prefer structured APIs and official feeds; use browser/Chrome workflows when a page is JavaScript-rendered, blocked, or ahead of API wrappers.
+Use this reference when selecting data for MLB game prediction. Prefer structured APIs and official feeds; use browser/Chrome workflows when a page is JavaScript-rendered, blocked, or ahead of API wrappers. Do not use sportsbook odds, market-implied probabilities, MLB contextMetrics, ESPN win probability, Baseball Savant win expectancy, or any other provider's win-probability number as an input to the prediction.
 
 ## Live/In-Progress Data Ranking
 
 1. **MLB Stats API / Gameday**  
-   Best default free source for live state. Use it for schedules, gamePk resolution, live feed, linescore, boxscore, play-by-play, lineups, standings, team/player stats, weather, and MLB contextMetrics win probability.
+   Best default free source for live state. Use it for schedules, gamePk resolution, live feed, linescore, boxscore, play-by-play, lineups, standings, team/player stats, and weather.
    - Live feed: `https://statsapi.mlb.com/api/v1.1/game/{gamePk}/feed/live`
-   - Context metrics: `https://statsapi.mlb.com/api/v1/game/{gamePk}/contextMetrics`
    - Boxscore: `https://statsapi.mlb.com/api/v1/game/{gamePk}/boxscore`
    - Schedule: `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=YYYY-MM-DD&hydrate=team,linescore,probablePitcher,venue`
    - Team stats: `https://statsapi.mlb.com/api/v1/teams/{teamId}/stats?stats=season&group=hitting,pitching,fielding&season=YYYY&gameType=R`
    - Strengths: official scoring, no API key in practice, pitch/play granularity, current lineups and box score.
-   - Limitations: public documentation is informal; win probability can lag a play; `currentPlay` may be an administrative event.
+   - Limitations: public documentation is informal; `currentPlay` may be an administrative event. Ignore `contextMetrics` if encountered because it is a provider win-probability number.
 
 2. **ESPN Gamecast / site API**  
-   Strong cross-check for live score and win probability, often useful when MLB contextMetrics lags.
+   Strong factual cross-check for live score, inning, base/out state, and play sequence.
    - Public web page: `https://www.espn.com/mlb/game/_/gameId/{espnGameId}`
    - Site summary JSON often works at: `https://site.web.api.espn.com/apis/site/v2/sports/baseball/mlb/summary?event={espnGameId}`
-   - Strengths: quick Gamecast state, win-probability history, readable play sequence.
-   - Limitations: not an official MLB data contract; ESPN ids differ from MLB gamePk; can lag or omit details.
+   - Strengths: quick Gamecast state and readable play sequence.
+   - Limitations: not an official MLB data contract; ESPN ids differ from MLB gamePk; can lag or omit details. Ignore `winprobability` fields.
 
 3. **Baseball Savant / Statcast Gamefeed**  
-   Best public source for pitch and batted-ball quality: exit velocity, launch angle, xBA/xwOBA, barrels, hard-hit, pitch movement, WPA/top performers.
+   Best public source for pitch and batted-ball quality: exit velocity, launch angle, xBA/xwOBA, barrels, hard-hit, and pitch movement.
    - Gamefeed: `https://baseballsavant.mlb.com/gf?game_pk={gamePk}`
    - CSV docs: `https://baseballsavant.mlb.com/csv-docs`
    - Strengths: advanced pitch-by-pitch and batted-ball context.
@@ -31,9 +30,10 @@ Use this reference when selecting data for MLB game prediction. Prefer structure
 4. **Commercial APIs for production-grade live systems**  
    Use only if credentials are available.
    - Sportradar MLB API: official venue-collected MLB data normalized into Sportradar format; real-time play-by-play, boxscore, game summary, push feeds, and some Statcast fields. Historical MLB API data starts in 2013; Statcast fields from 2020 for supported endpoints.
-   - SportsDataIO MLB API: real-time game lifecycle coverage including scores, game state, team/player stats, play-by-play/pitch-by-pitch, in-play odds, weather, lineups, injuries, projections, and historical database offerings.
-   - Strengths: SLAs, stable docs, odds/injuries/depth charts, push/production integration.
+   - SportsDataIO MLB API: real-time game lifecycle coverage including scores, game state, team/player stats, play-by-play/pitch-by-pitch, weather, lineups, injuries, projections, and historical database offerings.
+   - Strengths: SLAs, stable docs, injuries/depth charts, push/production integration.
    - Limitations: paid, key-based, provider-specific ids and schemas.
+   - Rule: if these feeds include odds or win-probability fields, ignore those fields.
 
 5. **Scoreboard/news fallbacks**  
    MLB.com, CBS, Yahoo, The Athletic, team sites, and beat reporters can help with injuries, late scratches, rain delays, and qualitative context. Do not use them as the primary source for exact live base/out state if structured feeds are available.
@@ -53,8 +53,8 @@ Use this reference when selecting data for MLB game prediction. Prefer structure
    Use for pitch arsenal, hitter quality of contact, xwOBA, hard-hit/barrel trends, platoon and rolling-window analysis.
 
 4. **FanGraphs**  
-   Best public-facing advanced leaderboard ecosystem for wRC+, WAR, FIP/xFIP, K-BB%, team pages, splits, projections, playoff odds, depth charts, and park factors. FanGraphs notes MLB/MiLB data from MLB and pitch/play data from Sports Info Solutions.  
-   Use for current-season team/player quality, projections, bullpen depth, park factors, and contextual sabermetrics. Scraping may be brittle; prefer browser or pybaseball when helpful.
+   Best public-facing advanced leaderboard ecosystem for wRC+, WAR, FIP/xFIP, K-BB%, team pages, splits, projections, depth charts, and park factors. FanGraphs notes MLB/MiLB data from MLB and pitch/play data from Sports Info Solutions.  
+   Use for current-season team/player quality, projections, bullpen depth, park factors, and contextual sabermetrics. Do not use playoff odds or any game/team probability pages as model inputs. Scraping may be brittle; prefer browser or pybaseball when helpful.
 
 5. **Baseball-Reference / Stathead**  
    Excellent for box scores, game logs, splits, streaks, player/team pages, historical records, park factors, and Stathead query tools.  
@@ -69,7 +69,7 @@ Use this reference when selecting data for MLB game prediction. Prefer structure
 
 ## Recommended Source Mix by Task
 
-- **Live win probability**: MLB live feed + MLB contextMetrics + ESPN Gamecast cross-check. Add Savant for batted-ball quality.
+- **Live win probability**: calculate independently with `scripts/markov_wp.py` when score, inning, half-inning, outs, bases, and home/away context are known. Feed it MLB live state plus team run scoring/event-rate adjustments. Use ESPN only to cross-check factual live state. Add Savant for batted-ball quality.
 - **Pre-game prediction**: MLB schedule/probables + standings/team stats + FanGraphs projections/park factors + Savant pitcher/hitter trends + injury/lineup news.
 - **Historical model/backtest**: Retrosheet play-by-play + Lahman season/team tables + Savant modern pitch quality.
 - **Player matchup**: Savant pitch arsenal and batter quality-of-contact + MLB player stats/splits + FanGraphs/Stathead splits.
@@ -78,11 +78,23 @@ Use this reference when selecting data for MLB game prediction. Prefer structure
 ## Source Conflict Policy
 
 - Name the source and refresh time for live states.
-- Prefer the latest completed play over a stale probability number.
+- Prefer the latest completed play over any stale factual scoreboard state.
 - Prefer MLB official feed for score/base/out and official scoring.
-- Prefer ESPN only when its win probability has clearly incorporated a newer completed play than MLB contextMetrics.
+- Use ESPN only for factual state/play sequence cross-checks, not win probability.
 - Prefer Savant for quality-of-contact, not official score correction.
 - If browser-only pages are ahead or direct API calls 403, use Chrome/browser extraction rather than abandoning the source.
+
+## Probability Ban
+
+When producing an MLB prediction, never use these as inputs, anchors, calibration targets, or "sanity checks":
+
+- Sportsbook odds, moneylines, totals, run lines, market-implied probabilities, or betting consensus.
+- MLB `contextMetrics` win probability.
+- ESPN `winprobability` or Gamecast win probability.
+- Baseball Savant win expectancy, WPA-derived live probabilities, or any provider's current-game win probability.
+- FanGraphs playoff odds, betting pages, or third-party model probabilities.
+
+It is acceptable to use factual data from the same sites: score, inning, outs, runners, count, play-by-play, boxscore, lineups, injuries, weather, pitch data, batted-ball metrics, season stats, splits, projections, and park factors.
 
 ## Research Sources
 

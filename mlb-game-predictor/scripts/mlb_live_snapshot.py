@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fetch a compact MLB live-game snapshot from public MLB Stats API endpoints."""
+"""Fetch a compact MLB live-game snapshot from public MLB Stats API endpoints.
+
+This script intentionally omits provider win-probability endpoints such as MLB
+contextMetrics. The skill using this script calculates probabilities
+independently from factual game state and historical context.
+"""
 
 from __future__ import annotations
 
@@ -218,10 +223,6 @@ def recent_games(team_id: int, end_date: str, days: int = 14, limit: int = 10) -
 def build_snapshot(game_pk: int, include_season: bool) -> dict[str, Any]:
     feed = api(f"/api/v1.1/game/{game_pk}/feed/live")
     box = api(f"/api/v1/game/{game_pk}/boxscore")
-    try:
-        context = api(f"/api/v1/game/{game_pk}/contextMetrics")
-    except Exception as exc:
-        context = {"error": str(exc)}
 
     game_data = feed["gameData"]
     live = feed["liveData"]
@@ -271,13 +272,7 @@ def build_snapshot(game_pk: int, include_season: bool) -> dict[str, Any]:
             }
             for p in completed_plays[-10:]
         ],
-        "winProbability": {
-            "mlbContextMetrics": {
-                "away": context.get("awayWinProbability"),
-                "home": context.get("homeWinProbability"),
-                "error": context.get("error"),
-            }
-        },
+        "probabilityPolicy": "No provider win-probability or odds fields fetched. Calculate independently.",
         "boxscore": {
             side: {
                 "team": box["teams"][side]["team"]["name"],
@@ -290,7 +285,6 @@ def build_snapshot(game_pk: int, include_season: bool) -> dict[str, Any]:
         "gameInfo": box.get("info", []),
         "sourceUrls": {
             "liveFeed": f"{BASE}/api/v1.1/game/{game_pk}/feed/live",
-            "contextMetrics": f"{BASE}/api/v1/game/{game_pk}/contextMetrics",
             "boxscore": f"{BASE}/api/v1/game/{game_pk}/boxscore",
             "baseballSavant": f"https://baseballsavant.mlb.com/gf?game_pk={game_pk}",
         },
@@ -314,7 +308,6 @@ def print_text(snapshot: dict[str, Any]) -> None:
     teams = snapshot["teams"]
     score = snapshot["score"]
     inning = snapshot["inning"]
-    wp = snapshot["winProbability"]["mlbContextMetrics"]
     print(f"Fetched UTC: {snapshot['fetchedAtUtc']}")
     print(f"GamePk: {snapshot['gamePk']} | Date: {snapshot['officialDate']} | Venue: {snapshot['venue'].get('name')}")
     print(f"Status: {snapshot['status'].get('detailedState')}")
@@ -323,7 +316,7 @@ def print_text(snapshot: dict[str, Any]) -> None:
     print(f"Offense: {json.dumps(snapshot['offense'], ensure_ascii=False)}")
     print(f"Defense pitcher: {snapshot['defensePitcher']}")
     print(f"Current play: {json.dumps(snapshot['currentPlay'], ensure_ascii=False)}")
-    print(f"MLB win probability: away={wp.get('away')} home={wp.get('home')}")
+    print(f"Probability policy: {snapshot['probabilityPolicy']}")
     print("Last plays:")
     for play in snapshot["lastPlays"]:
         print(f"- {play['inning']} {play['half']}: {play['event']} | {play['description']}")

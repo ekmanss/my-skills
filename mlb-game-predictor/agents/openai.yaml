@@ -1,4 +1,4 @@
 interface:
   display_name: "MLB Game Predictor"
-  short_description: "MLB live and historical win probability analysis"
+  short_description: "Independent MLB win probability analysis"
   default_prompt: "Use $mlb-game-predictor to analyze the in-progress Mets vs Braves game."
