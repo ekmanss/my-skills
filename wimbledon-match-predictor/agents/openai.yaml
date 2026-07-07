@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wimbledon Match Predictor"
+  short_description: "Independent Wimbledon match win probabilities"
+  default_prompt: "Use $wimbledon-match-predictor to analyze Wimbledon正在进行的Lehecka vs Zverev."
